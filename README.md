@@ -29,3 +29,6 @@ A simple app for counting stock.
   builds the APK and attaches it to the run as `stock-count-apk`.
 
 Min Android version: 7.0 (API 24).
+
+---
+Powered by GGHL · Developed by Bilal · © 2026 GGHL. All rights reserved.

@@ -29,6 +29,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+const val COPYRIGHT_YEAR = 2026
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,6 +83,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     var storageLoc by remember { mutableStateOf(settings.storageLoc) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
     var editing by remember { mutableStateOf<Item?>(null) }
     var scanning by remember { mutableStateOf(false) }
@@ -133,6 +136,10 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
+                            text = { Text("About") },
+                            onClick = { menuOpen = false; showAbout = true }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Import material list") },
                             onClick = { menuOpen = false; importMaterials() }
                         )
@@ -142,6 +149,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                         )
                     }
                 }
+            )
+        },
+        bottomBar = {
+            Text(
+                "Powered by GGHL · Developed by Bilal · © $COPYRIGHT_YEAR GGHL",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 6.dp)
             )
         },
         floatingActionButton = {
@@ -268,6 +284,22 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             },
             confirmButton = { TextButton(onClick = { notFound = null; scanning = true }) { Text("Scan again") } },
             dismissButton = { TextButton(onClick = { notFound = null }) { Text("OK") } }
+        )
+    }
+
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text("Stock Count") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Version ${BuildConfig.VERSION_NAME}")
+                    Text("Powered by GGHL")
+                    Text("Developed by Bilal")
+                    Text("© $COPYRIGHT_YEAR GGHL. All rights reserved.")
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
         )
     }
 
