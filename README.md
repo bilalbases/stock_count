@@ -31,4 +31,4 @@ A simple app for counting stock.
 Min Android version: 7.0 (API 24).
 
 ---
-Powered by GGHL · Developed by Bilal · © 2026 GGHL. All rights reserved.
+Powered by GGHL · Developed by Bilal · © 2026 Bilal. All rights reserved.

@@ -199,7 +199,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
         },
         bottomBar = {
             Text(
-                "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEAR GGHL",
+                "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEAR Bilal",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -410,7 +410,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                     Text("Version ${BuildConfig.VERSION_NAME}")
                     Text("Powered by GGHL")
                     Text("Developed by Bilal")
-                    Text("© $COPYRIGHT_YEAR GGHL. All rights reserved.")
+                    Text("© $COPYRIGHT_YEAR Bilal. All rights reserved.")
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
