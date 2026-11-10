@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 val Brand = Color(0xFF0E4C92)       // deep blue
 val BrandDark = Color(0xFF0A3770)
 val Accent = Color(0xFF00A3A3)      // teal
+val FooterGrey = Color(0xFF8A929E)  // soft grey for the credits line
 
 private val Light = lightColorScheme(
     primary = Brand,

@@ -24,7 +24,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
@@ -103,7 +109,26 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     var confirmClear by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
-    var editing by remember { mutableStateOf<Item?>(null) }
+    // Quantities typed on the cards but not saved yet (item id -> text).
+    val drafts = remember { mutableStateMapOf<Long, String>() }
+    var deleting by remember { mutableStateOf<Item?>(null) }
+    val focusManager = LocalFocusManager.current
+    fun saveAll() {
+        scope.launch {
+            val current = dao.allOnce().associateBy { it.id }
+            var changed = 0
+            for ((id, text) in drafts.toMap()) {
+                val item = current[id] ?: continue
+                val q = text.toIntOrNull() ?: continue
+                if (q != item.quantity) {
+                    dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)); changed++
+                }
+            }
+            drafts.clear()
+            focusManager.clearFocus()
+            notify(if (changed > 0) "Saved · $changed quantities updated" else "Saved")
+        }
+    }
     var scanning by remember { mutableStateOf(false) }
     // Barcode that was scanned but is not in the material list.
     var notFound by remember { mutableStateOf<String?>(null) }
@@ -198,27 +223,35 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             )
         },
         bottomBar = {
-            Text(
-                "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEAR Bilal",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 8.dp)
-            )
-        },
-        floatingActionButton = {
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SmallFloatingActionButton(
-                    onClick = { editing = Item(name = "", shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim()) },
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ) { Icon(Icons.Filled.Add, contentDescription = "Add item manually") }
-                ExtendedFloatingActionButton(
-                    onClick = { scanning = true },
-                    containerColor = Brand,
-                    contentColor = Color.White,
-                    icon = { Icon(AppIcons.Barcode, contentDescription = null) },
-                    text = { Text("Scan", fontWeight = FontWeight.SemiBold) }
+            Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ExtendedFloatingActionButton(
+                        onClick = { saveAll() },
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary,
+                        icon = { Icon(Icons.Filled.Check, contentDescription = null) },
+                        text = {
+                            Text(if (drafts.isEmpty()) "Save" else "Save (${drafts.size})", fontWeight = FontWeight.SemiBold)
+                        }
+                    )
+                    ExtendedFloatingActionButton(
+                        onClick = { scanning = true },
+                        containerColor = Brand,
+                        contentColor = Color.White,
+                        icon = { Icon(AppIcons.Barcode, contentDescription = null) },
+                        text = { Text("Scan", fontWeight = FontWeight.SemiBold) }
+                    )
+                }
+                Text(
+                    "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEAR Bilal",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = FooterGrey,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                 )
             }
         }
@@ -229,7 +262,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
         }
         LazyColumn(
             Modifier.padding(padding).fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 150.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // ---- Count details (collapsible) ----
@@ -373,12 +406,24 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             }
 
             items(shown, key = { it.id }) { item ->
+                fun step(delta: Int) {
+                    val base = drafts[item.id]?.toIntOrNull() ?: item.quantity
+                    drafts.remove(item.id)
+                    val q = (base + delta).coerceAtLeast(0)
+                    scope.launch { dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)) }
+                }
                 ItemCard(
                     item = item,
-                    onMinus = { scope.launch { dao.change(item.id, -1) } },
-                    onPlus = { scope.launch { dao.change(item.id, 1) } },
-                    onZeroCount = { checked -> scope.launch { dao.setZeroCount(item.id, checked) } },
-                    onClick = { editing = item }
+                    qtyText = drafts[item.id] ?: item.quantity.toString(),
+                    onQtyChange = { drafts[item.id] = it.filter(Char::isDigit).take(7) },
+                    onMinus = { step(-1) },
+                    onPlus = { step(1) },
+                    onZeroCount = { checked ->
+                        drafts.remove(item.id)
+                        scope.launch { dao.setZeroCount(item.id, checked) }
+                    },
+                    onDelete = { deleting = item },
+                    onDone = { saveAll() }
                 )
             }
         }
@@ -431,12 +476,18 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
         )
     }
 
-    editing?.let { item ->
-        EditDialog(
-            item = item,
-            onDismiss = { editing = null },
-            onSave = { saved -> scope.launch { dao.save(saved) }; editing = null },
-            onDelete = if (item.id != 0L) ({ scope.launch { dao.delete(item) }; editing = null }) else null
+    deleting?.let { item ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            icon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Delete item?") },
+            text = { Text("${item.label()} (${item.quantity} ${item.uom}) will be removed from this count.") },
+            confirmButton = {
+                TextButton(onClick = { drafts.remove(item.id); scope.launch { dao.delete(item) }; deleting = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
         )
     }
 }
@@ -473,7 +524,7 @@ fun EmptyState() {
         Text("No items counted yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Tap Scan to start counting.",
+            "Tap Scan to start counting.\nUpload your material list first.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -497,9 +548,17 @@ private fun Tag(text: String, strong: Boolean = false) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ItemCard(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (Boolean) -> Unit, onClick: () -> Unit) {
+fun ItemCard(
+    item: Item,
+    qtyText: String,
+    onQtyChange: (String) -> Unit,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    onZeroCount: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+    onDone: () -> Unit,
+) {
     ElevatedCard(
-        onClick = onClick,
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
@@ -529,13 +588,26 @@ fun ItemCard(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (
             // Stepper
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StepButton("−", onMinus)
-                Text(
-                    item.quantity.toString(),
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (item.zeroCount) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.widthIn(min = 48.dp).padding(horizontal = 4.dp)
+                // Tap the number to type a quantity; press Save (or Done on the keyboard) to keep it.
+                val edited = qtyText != item.quantity.toString()
+                BasicTextField(
+                    value = qtyText,
+                    onValueChange = onQtyChange,
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        color = when {
+                            edited -> MaterialTheme.colorScheme.secondary
+                            item.zeroCount -> MaterialTheme.colorScheme.onSurfaceVariant
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onDone() }),
+                    modifier = Modifier.width(64.dp).padding(horizontal = 4.dp)
                 )
                 StepButton("+", onPlus, primary = true)
             }
@@ -549,8 +621,17 @@ fun ItemCard(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (
                 "Zero count",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (item.zeroCount) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = if (item.zeroCount) FontWeight.SemiBold else FontWeight.Normal
+                fontWeight = if (item.zeroCount) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.weight(1f)
             )
+            TextButton(
+                onClick = onDelete,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Delete")
+            }
         }
     }
 }
@@ -567,56 +648,4 @@ private fun StepButton(symbol: String, onClick: () -> Unit, primary: Boolean = f
             contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) { Text(symbol, fontSize = 22.sp, fontWeight = FontWeight.Medium) }
-}
-
-@Composable
-fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDelete: (() -> Unit)?) {
-    var name by remember { mutableStateOf(item.name) }
-    var barcode by remember { mutableStateOf(item.barcode) }
-    var material by remember { mutableStateOf(item.material) }
-    var shelf by remember { mutableStateOf(item.shelf) }
-    var uom by remember { mutableStateOf(item.uom) }
-    var stockType by remember { mutableStateOf(item.stockType) }
-    var storageLoc by remember { mutableStateOf(item.storageLoc) }
-    var qty by remember { mutableStateOf(item.quantity.toString()) }
-    var zeroCount by remember { mutableStateOf(item.zeroCount) }
-    var confirmDelete by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (item.id == 0L) "New item" else "Edit item") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(material, { material = it }, label = { Text("Material") }, singleLine = true)
-                OutlinedTextField(name, { name = it }, label = { Text("Description (optional)") }, singleLine = true)
-                OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode") }, singleLine = true)
-                OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
-                OutlinedTextField(storageLoc, { storageLoc = it.uppercase() }, label = { Text("Storage location") }, singleLine = true)
-                OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
-                OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
-                OutlinedTextField(
-                    qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
-                    Text("Zero count")
-                }
-                if (onDelete != null) {
-                    TextButton(onClick = { if (confirmDelete) onDelete() else confirmDelete = true }) {
-                        Text(if (confirmDelete) "Tap again to delete" else "Delete item", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = material.isNotBlank() || name.isNotBlank(),
-                onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
-                }
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
 }
