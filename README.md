@@ -9,7 +9,11 @@ A simple app for counting stock.
   (EAN, UNIT, MEINS, MAKTX also work); without a header, columns A-D are read in that order.
   Importing replaces the previous list. A material can appear on several rows with different barcodes
   (e.g. one for EA, one for CAR).
-- **Scan barcode**: a barcode in the material list is added to the current shelf with its material
+- **Zebra devices:** the hardware scanner (trigger buttons) works too. On first start the app creates a
+  DataWedge profile called "StockCount" that sends scans to the app (keystroke output off). A trigger
+  scan counts the barcode immediately, the same as a camera scan. If it doesn't react, open DataWedge
+  on the device and check that the StockCount profile is enabled and linked to com.example.stockcount.
+- **Scan barcode** (camera): a barcode in the material list is added to the current shelf with its material
   and unit, no typing needed; if the barcode is already on the current shelf, its count goes up by 1.
   A barcode that is not in the material list adds nothing and shows a "Barcode not found"
   message with a "Scan again" button.

@@ -1,6 +1,9 @@
 package com.example.stockcount
 
+import android.content.BroadcastReceiver
 import android.os.Bundle
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -52,20 +55,36 @@ import kotlinx.coroutines.withContext
 const val COPYRIGHT_YEAR = 2026
 
 class MainActivity : ComponentActivity() {
+    /** Barcodes from the Zebra hardware scanner, handed to the screen. */
+    private val hardwareScans = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    private var zebraReceiver: BroadcastReceiver? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
+        ZebraScanner.configure(this)
         val db = AppDb.get(this)
         val settings = Settings(this)
         setContent {
-            StockTheme { StockScreen(db.items(), db.materials(), settings) }
+            StockTheme { StockScreen(db.items(), db.materials(), settings, hardwareScans) }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        zebraReceiver = ZebraScanner.register(this) { hardwareScans.tryEmit(it) }
+    }
+
+    override fun onPause() {
+        zebraReceiver?.let { ZebraScanner.unregister(this, it) }
+        zebraReceiver = null
+        super.onPause()
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
+fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwareScans: Flow<String>) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val itemsFlow = remember { dao.all() }
@@ -155,6 +174,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             }
             // Unknown barcode -> nothing is added; show a clear message.
             notFound = code
+        }
+    }
+
+    // Zebra trigger scans: count straight away (and close the camera view if it is open).
+    LaunchedEffect(hardwareScans) {
+        hardwareScans.collect { code ->
+            scanning = false
+            notFound = null
+            handleScan(code)
         }
     }
 
