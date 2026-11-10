@@ -11,8 +11,8 @@ A simple app for counting stock.
   (e.g. one for EA, one for CAR).
 - **Scan barcode**: a barcode in the material list is added to the current shelf with its material
   and unit, no typing needed; if the barcode is already on the current shelf, its count goes up by 1.
-  Otherwise a "New item" box opens with the barcode and shelf filled in (and the name, if
-  that barcode was seen on another shelf).
+  A barcode that is not in the material list adds nothing and shows a "Barcode not found"
+  message with a "Scan again" button.
 - **+ / −** buttons on each row, and a **Zero count** checkbox to confirm an item was checked and there are none (sets quantity to 0; pressing + clears it); tap a row to edit name, barcode, shelf, quantity, or delete it.
 - **Share icon** exports an Excel file (.xlsx) in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (Storage location field, editable per item; shelf ID stays in the app only), ITEM, MATERIAL (from the material list), STOCK_TYPE (Stock type field, editable per item), ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X).
 - **⋮ > Start new count** deletes all items.

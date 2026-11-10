@@ -84,6 +84,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     // Item being added/edited. id = 0 means a new item.
     var editing by remember { mutableStateOf<Item?>(null) }
     var scanning by remember { mutableStateOf(false) }
+    // Barcode that was scanned but is not in the material list.
+    var notFound by remember { mutableStateOf<String?>(null) }
 
     fun handleScan(code: String) {
         scope.launch {
@@ -105,13 +107,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                 Toast.makeText(context, "${item.label()}: 1", Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            // Unknown barcode -> ask for the details.
-            val known = dao.anyWithBarcode(code)
-            editing = Item(
-                name = known?.name ?: "", barcode = code, material = known?.material ?: "",
-                shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), uom = known?.uom ?: "EA", quantity = 1
-            )
-            Toast.makeText(context, "Barcode $code is not in the material list", Toast.LENGTH_LONG).show()
+            // Unknown barcode -> nothing is added; show a clear message.
+            notFound = code
         }
     }
 
@@ -257,6 +254,21 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                 }
             }
         }
+    }
+
+    notFound?.let { code ->
+        AlertDialog(
+            onDismissRequest = { notFound = null },
+            title = { Text("Barcode not found") },
+            text = {
+                Text(
+                    "Barcode $code is not in the material list. Nothing was added.",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            },
+            confirmButton = { TextButton(onClick = { notFound = null; scanning = true }) { Text("Scan again") } },
+            dismissButton = { TextButton(onClick = { notFound = null }) { Text("OK") } }
+        )
     }
 
     if (confirmClear) {
