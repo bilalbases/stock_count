@@ -77,6 +77,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     var branch by remember { mutableStateOf(settings.branch) }
     var shelf by remember { mutableStateOf(settings.shelf) }
     var planDate by remember { mutableStateOf(settings.planDate) }
+    var stockType by remember { mutableStateOf(settings.stockType) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
@@ -97,7 +98,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             if (m != null) {
                 val item = Item(
                     name = m.description, barcode = code, material = m.material, uom = m.uom,
-                    shelf = shelf.trim(), quantity = 1
+                    shelf = shelf.trim(), stockType = stockType.trim(), quantity = 1
                 )
                 dao.save(item)
                 Toast.makeText(context, "${item.label()}: 1", Toast.LENGTH_SHORT).show()
@@ -107,7 +108,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             val known = dao.anyWithBarcode(code)
             editing = Item(
                 name = known?.name ?: "", barcode = code, material = known?.material ?: "",
-                shelf = shelf.trim(), uom = known?.uom ?: "EA", quantity = 1
+                shelf = shelf.trim(), stockType = stockType.trim(), uom = known?.uom ?: "EA", quantity = 1
             )
             Toast.makeText(context, "Barcode $code is not in the material list", Toast.LENGTH_LONG).show()
         }
@@ -147,7 +148,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
         },
         floatingActionButton = {
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SmallFloatingActionButton(onClick = { editing = Item(name = "", shelf = shelf.trim()) }) {
+                SmallFloatingActionButton(onClick = { editing = Item(name = "", shelf = shelf.trim(), stockType = stockType.trim()) }) {
                     Icon(Icons.Filled.Add, contentDescription = "Add item")
                 }
                 ExtendedFloatingActionButton(onClick = { scanning = true }) { Text("Scan barcode") }
@@ -191,13 +192,20 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
-                    value = search,
-                    onValueChange = { search = it },
-                    label = { Text("Search") },
+                    value = stockType,
+                    onValueChange = { stockType = it.uppercase(); settings.stockType = stockType },
+                    label = { Text("Stock type") },
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
             }
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text("Search") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+            )
             Row(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -274,7 +282,8 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (B
                 item.shelf.takeIf { it.isNotEmpty() }?.let { "Shelf $it" },
                 item.material.takeIf { it.isNotEmpty() && item.name.isNotEmpty() },
                 item.barcode.takeIf { it.isNotEmpty() },
-                item.uom
+                item.uom,
+                item.stockType.takeIf { it.isNotEmpty() }?.let { "Type $it" }
             ).joinToString(" · ")
             if (details.isNotEmpty()) Text(details, style = MaterialTheme.typography.bodySmall)
             Row(
@@ -308,6 +317,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
     var material by remember { mutableStateOf(item.material) }
     var shelf by remember { mutableStateOf(item.shelf) }
     var uom by remember { mutableStateOf(item.uom) }
+    var stockType by remember { mutableStateOf(item.stockType) }
     var qty by remember { mutableStateOf(item.quantity.toString()) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -322,6 +332,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
                 OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
+                OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
                 OutlinedTextField(
                     qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -341,7 +352,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
             TextButton(
                 enabled = material.isNotBlank() || name.isNotBlank(),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },

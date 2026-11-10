@@ -15,6 +15,8 @@ data class Item(
     val quantity: Int = 0,
     /** Unit of measure for ENTRY_UOM, e.g. EA or CAR. */
     val uom: String = "EA",
+    /** STOCK_TYPE in the export (blank = unrestricted). */
+    val stockType: String = "",
     /** Checked = counted and confirmed there are none (not just "not counted yet"). */
     val zeroCount: Boolean = false,
 ) {
@@ -84,7 +86,7 @@ abstract class MaterialDao {
     }
 }
 
-@Database(entities = [Item::class, Material::class], version = 2, exportSchema = false)
+@Database(entities = [Item::class, Material::class], version = 3, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun items(): ItemDao
     abstract fun materials(): MaterialDao
@@ -109,6 +111,9 @@ class Settings(context: Context) {
         get() = prefs.getString("shelf", "") ?: ""
         set(v) = prefs.edit().putString("shelf", v).apply()
     /** PLAN_DATE in dd.MM.yyyy. Empty until the user types one; export then uses today. */
+    var stockType: String
+        get() = prefs.getString("stockType", "") ?: ""
+        set(v) = prefs.edit().putString("stockType", v).apply()
     var planDate: String
         get() = prefs.getString("planDate", "") ?: ""
         set(v) = prefs.edit().putString("planDate", v).apply()

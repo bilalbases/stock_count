@@ -59,7 +59,7 @@ object XlsxExport {
         return items.mapIndexed { i, item ->
             listOf(
                 today, plan, year, branch, item.shelf, (i + 1).toString(),
-                item.material.ifBlank { item.barcode }.ifBlank { item.name }, "", item.quantity.toString(), item.uom,
+                item.material.ifBlank { item.barcode }.ifBlank { item.name }, item.stockType, item.quantity.toString(), item.uom,
                 if (item.zeroCount) "X" else ""
             )
         }
