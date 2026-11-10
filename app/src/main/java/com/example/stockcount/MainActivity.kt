@@ -150,6 +150,7 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                         item = item,
                         onMinus = { scope.launch { dao.change(item.id, -1) } },
                         onPlus = { scope.launch { dao.change(item.id, 1) } },
+                        onZeroCount = { checked -> scope.launch { dao.setZeroCount(item.id, checked) } },
                         onClick = { editing = item }
                     )
                     HorizontalDivider()
@@ -183,7 +184,7 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
 }
 
 @Composable
-fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onClick: () -> Unit) {
+fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (Boolean) -> Unit, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -195,6 +196,13 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onClick: () -> 
                 item.barcode.takeIf { it.isNotEmpty() }
             ).joinToString(" · ")
             if (details.isNotEmpty()) Text(details, style = MaterialTheme.typography.bodySmall)
+            Row(
+                Modifier.clickable { onZeroCount(!item.zeroCount) },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = item.zeroCount, onCheckedChange = onZeroCount, modifier = Modifier.size(32.dp))
+                Text("Zero count", style = MaterialTheme.typography.bodySmall)
+            }
         }
         FilledTonalButton(onClick = onMinus, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(44.dp)) {
             Text("−", fontSize = 22.sp)
@@ -218,6 +226,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
     var barcode by remember { mutableStateOf(item.barcode) }
     var shelf by remember { mutableStateOf(item.shelf) }
     var qty by remember { mutableStateOf(item.quantity.toString()) }
+    var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -229,9 +238,13 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
                 OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode (optional)") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
                 OutlinedTextField(
-                    qty, { qty = it.filter(Char::isDigit) }, label = { Text("Quantity") }, singleLine = true,
+                    qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
+                    Text("Zero count (checked, none on shelf)")
+                }
                 if (onDelete != null) {
                     TextButton(onClick = { if (confirmDelete) onDelete() else confirmDelete = true }) {
                         Text(if (confirmDelete) "Tap again to delete" else "Delete item", color = MaterialTheme.colorScheme.error)
@@ -243,7 +256,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
             TextButton(
                 enabled = name.isNotBlank(),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), shelf = shelf.trim(), quantity = qty.toIntOrNull() ?: 0))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), shelf = shelf.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },

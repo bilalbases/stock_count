@@ -11,6 +11,8 @@ data class Item(
     val barcode: String = "",
     val shelf: String = "",
     val quantity: Int = 0,
+    /** Checked = counted and confirmed there are none (not just "not counted yet"). */
+    val zeroCount: Boolean = false,
 )
 
 @Dao
@@ -33,10 +35,13 @@ interface ItemDao {
     @Delete
     suspend fun delete(item: Item)
 
+    @Query("UPDATE items SET zeroCount = :checked, quantity = CASE WHEN :checked THEN 0 ELSE quantity END WHERE id = :id")
+    suspend fun setZeroCount(id: Long, checked: Boolean)
+
     @Query("DELETE FROM items")
     suspend fun deleteAll()
 
-    @Query("UPDATE items SET quantity = MAX(0, quantity + :delta) WHERE id = :id")
+    @Query("UPDATE items SET quantity = MAX(0, quantity + :delta), zeroCount = CASE WHEN :delta > 0 THEN 0 ELSE zeroCount END WHERE id = :id")
     suspend fun change(id: Long, delta: Int)
 }
 

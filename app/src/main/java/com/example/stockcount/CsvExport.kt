@@ -33,9 +33,9 @@ object CsvExport {
     fun toCsv(branch: String, items: List<Item>, at: Date = Date()): String {
         val time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(at)
         val sb = StringBuilder("\uFEFF") // BOM so Excel reads accents/Arabic text correctly
-        sb.append("Branch ID,Shelf ID,Item,Barcode,Quantity,Counted at\r\n")
+        sb.append("Branch ID,Shelf ID,Item,Barcode,Quantity,Zero count,Counted at\r\n")
         for (i in items) {
-            sb.append(listOf(branch, i.shelf, i.name, i.barcode, i.quantity.toString(), time)
+            sb.append(listOf(branch, i.shelf, i.name, i.barcode, i.quantity.toString(), if (i.zeroCount) "Yes" else "No", time)
                 .joinToString(",") { field(it) }).append("\r\n")
         }
         return sb.toString()
