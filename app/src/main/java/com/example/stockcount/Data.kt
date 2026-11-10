@@ -11,6 +11,8 @@ data class Item(
     val barcode: String = "",
     val shelf: String = "",
     val quantity: Int = 0,
+    /** Unit of measure for ENTRY_UOM, e.g. EA or CAR. */
+    val uom: String = "EA",
     /** Checked = counted and confirmed there are none (not just "not counted yet"). */
     val zeroCount: Boolean = false,
 )
@@ -26,8 +28,9 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE barcode = :code AND barcode != '' AND shelf = :shelf LIMIT 1")
     suspend fun byBarcode(code: String, shelf: String): Item?
 
-    @Query("SELECT name FROM items WHERE barcode = :code AND barcode != '' LIMIT 1")
-    suspend fun nameForBarcode(code: String): String?
+    /** Same barcode counted on another shelf, used to pre-fill name and unit. */
+    @Query("SELECT * FROM items WHERE barcode = :code AND barcode != '' LIMIT 1")
+    suspend fun anyWithBarcode(code: String): Item?
 
     @Upsert
     suspend fun save(item: Item)
@@ -67,4 +70,8 @@ class Settings(context: Context) {
     var shelf: String
         get() = prefs.getString("shelf", "") ?: ""
         set(v) = prefs.edit().putString("shelf", v).apply()
+    /** PLAN_DATE in dd.MM.yyyy. Empty until the user types one; export then uses today. */
+    var planDate: String
+        get() = prefs.getString("planDate", "") ?: ""
+        set(v) = prefs.edit().putString("planDate", v).apply()
 }

@@ -46,6 +46,7 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
     var search by remember { mutableStateOf("") }
     var branch by remember { mutableStateOf(settings.branch) }
     var shelf by remember { mutableStateOf(settings.shelf) }
+    var planDate by remember { mutableStateOf(settings.planDate) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
@@ -60,8 +61,11 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                 dao.change(found.id, 1)
                 Toast.makeText(context, "${found.name}: ${found.quantity + 1}", Toast.LENGTH_SHORT).show()
             } else {
-                val knownName = dao.nameForBarcode(code) ?: ""
-                editing = Item(name = knownName, barcode = code, shelf = shelf.trim(), quantity = 1)
+                val known = dao.anyWithBarcode(code)
+                editing = Item(
+                    name = known?.name ?: "", barcode = code, shelf = shelf.trim(),
+                    uom = known?.uom ?: "EA", quantity = 1
+                )
             }
         }
     }
@@ -80,8 +84,8 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                 title = { Text("Stock Count") },
                 actions = {
                     IconButton(onClick = {
-                        scope.launch { CsvExport.share(context, branch.trim(), dao.allOnce()) }
-                    }) { Icon(Icons.Filled.Share, contentDescription = "Export CSV") }
+                        scope.launch { XlsxExport.share(context, branch.trim(), planDate.trim(), dao.allOnce()) }
+                    }) { Icon(Icons.Filled.Share, contentDescription = "Export Excel") }
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More")
                     }
@@ -116,20 +120,37 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
+                    value = planDate,
+                    onValueChange = { v ->
+                        planDate = v.filter { it.isDigit() || it == '.' }.take(10); settings.planDate = planDate
+                    },
+                    label = { Text("Plan date") },
+                    placeholder = { Text("dd.mm.yyyy") },
+                    isError = planDate.isNotEmpty() && !XlsxExport.isValidDate(planDate),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
                     value = shelf,
                     onValueChange = { shelf = it; settings.shelf = it },
                     label = { Text("Current shelf ID") },
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text("Search") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
             }
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                label = { Text("Search") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-            )
             val shown = items.filter {
                 search.isBlank() || it.name.contains(search, true) || it.barcode.contains(search) ||
                     it.shelf.contains(search, true)
@@ -193,7 +214,8 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (B
             Text(item.name, fontWeight = FontWeight.Medium)
             val details = listOfNotNull(
                 item.shelf.takeIf { it.isNotEmpty() }?.let { "Shelf $it" },
-                item.barcode.takeIf { it.isNotEmpty() }
+                item.barcode.takeIf { it.isNotEmpty() },
+                item.uom
             ).joinToString(" · ")
             if (details.isNotEmpty()) Text(details, style = MaterialTheme.typography.bodySmall)
             Row(
@@ -225,6 +247,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
     var name by remember { mutableStateOf(item.name) }
     var barcode by remember { mutableStateOf(item.barcode) }
     var shelf by remember { mutableStateOf(item.shelf) }
+    var uom by remember { mutableStateOf(item.uom) }
     var qty by remember { mutableStateOf(item.quantity.toString()) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -237,6 +260,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true)
                 OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode (optional)") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
+                OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(
                     qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -256,7 +280,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
             TextButton(
                 enabled = name.isNotBlank(),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), shelf = shelf.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },

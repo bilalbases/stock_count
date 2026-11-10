@@ -8,8 +8,7 @@ A simple app for counting stock.
   Otherwise a "New item" box opens with the barcode and shelf filled in (and the name, if
   that barcode was seen on another shelf).
 - **+ / −** buttons on each row, and a **Zero count** checkbox to confirm an item was checked and there are none (sets quantity to 0; pressing + clears it); tap a row to edit name, barcode, shelf, quantity, or delete it.
-- **Share icon** exports a CSV (Branch ID, Shelf ID, Item, Barcode, Quantity, Zero count, Counted at)
-  and opens the share sheet (email, Drive, WhatsApp...). Opens in Excel.
+- **Share icon** exports an Excel file (.xlsx) in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (shelf), ITEM, MATERIAL (barcode), STOCK_TYPE, ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X).
 - **⋮ > Start new count** deletes all items.
 - Works fully offline. Everything is saved on the phone (Room database), and the
   barcode model (ML Kit, bundled) is inside the APK. Scanning uses the camera through
