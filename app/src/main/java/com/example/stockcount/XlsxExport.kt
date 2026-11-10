@@ -16,7 +16,7 @@ import java.util.zip.ZipOutputStream
  * DATE, PLAN_DATE, GJAHR, PLANT, STGE_LOC, ITEM, MATERIAL, STOCK_TYPE, ENTRY_QNT, ENTRY_UOM, ZERO_COUNT
  *
  * DATE = today, PLAN_DATE = the "Plan date" field (today if empty), GJAHR = current year,
- * PLANT = branch ID, STGE_LOC = shelf ID, ITEM = running number, MATERIAL = material number
+ * PLANT = branch ID, STGE_LOC = storage location, ITEM = running number, MATERIAL = material number
  * from the material list (falls back to the barcode, then the name), ZERO_COUNT = "X" when the checkbox is ticked.
  * Written by hand (no library) so it stays small and works offline.
  */
@@ -58,7 +58,7 @@ object XlsxExport {
         val year = Calendar.getInstance().apply { time = now }.get(Calendar.YEAR).toString()
         return items.mapIndexed { i, item ->
             listOf(
-                today, plan, year, branch, item.shelf, (i + 1).toString(),
+                today, plan, year, branch, item.storageLoc, (i + 1).toString(),
                 item.material.ifBlank { item.barcode }.ifBlank { item.name }, item.stockType, item.quantity.toString(), item.uom,
                 if (item.zeroCount) "X" else ""
             )

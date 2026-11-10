@@ -78,6 +78,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     var shelf by remember { mutableStateOf(settings.shelf) }
     var planDate by remember { mutableStateOf(settings.planDate) }
     var stockType by remember { mutableStateOf(settings.stockType) }
+    var storageLoc by remember { mutableStateOf(settings.storageLoc) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
@@ -98,7 +99,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             if (m != null) {
                 val item = Item(
                     name = m.description, barcode = code, material = m.material, uom = m.uom,
-                    shelf = shelf.trim(), stockType = stockType.trim(), quantity = 1
+                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 1
                 )
                 dao.save(item)
                 Toast.makeText(context, "${item.label()}: 1", Toast.LENGTH_SHORT).show()
@@ -108,7 +109,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
             val known = dao.anyWithBarcode(code)
             editing = Item(
                 name = known?.name ?: "", barcode = code, material = known?.material ?: "",
-                shelf = shelf.trim(), stockType = stockType.trim(), uom = known?.uom ?: "EA", quantity = 1
+                shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), uom = known?.uom ?: "EA", quantity = 1
             )
             Toast.makeText(context, "Barcode $code is not in the material list", Toast.LENGTH_LONG).show()
         }
@@ -148,7 +149,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
         },
         floatingActionButton = {
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SmallFloatingActionButton(onClick = { editing = Item(name = "", shelf = shelf.trim(), stockType = stockType.trim()) }) {
+                SmallFloatingActionButton(onClick = { editing = Item(name = "", shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim()) }) {
                     Icon(Icons.Filled.Add, contentDescription = "Add item")
                 }
                 ExtendedFloatingActionButton(onClick = { scanning = true }) { Text("Scan barcode") }
@@ -185,9 +186,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedTextField(
-                    value = shelf,
-                    onValueChange = { shelf = it; settings.shelf = it },
-                    label = { Text("Current shelf ID") },
+                    value = storageLoc,
+                    onValueChange = { storageLoc = it.uppercase(); settings.storageLoc = storageLoc },
+                    label = { Text("Storage location") },
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
@@ -199,13 +200,25 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
                     modifier = Modifier.weight(1f)
                 )
             }
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                label = { Text("Search") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-            )
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = shelf,
+                    onValueChange = { shelf = it; settings.shelf = it },
+                    label = { Text("Current shelf ID") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text("Search") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
             Row(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -283,6 +296,7 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (B
                 item.material.takeIf { it.isNotEmpty() && item.name.isNotEmpty() },
                 item.barcode.takeIf { it.isNotEmpty() },
                 item.uom,
+                item.storageLoc.takeIf { it.isNotEmpty() }?.let { "SLoc $it" },
                 item.stockType.takeIf { it.isNotEmpty() }?.let { "Type $it" }
             ).joinToString(" · ")
             if (details.isNotEmpty()) Text(details, style = MaterialTheme.typography.bodySmall)
@@ -318,6 +332,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
     var shelf by remember { mutableStateOf(item.shelf) }
     var uom by remember { mutableStateOf(item.uom) }
     var stockType by remember { mutableStateOf(item.stockType) }
+    var storageLoc by remember { mutableStateOf(item.storageLoc) }
     var qty by remember { mutableStateOf(item.quantity.toString()) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -331,6 +346,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
                 OutlinedTextField(name, { name = it }, label = { Text("Description (optional)") }, singleLine = true)
                 OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
+                OutlinedTextField(storageLoc, { storageLoc = it.uppercase() }, label = { Text("Storage location") }, singleLine = true)
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
                 OutlinedTextField(
@@ -352,7 +368,7 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
             TextButton(
                 enabled = material.isNotBlank() || name.isNotBlank(),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },
