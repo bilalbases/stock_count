@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.StockCount" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:statusBarColor">@color/brand</item>
+    </style>
+    <color name="brand">#0E4C92</color>
+    <color name="window_bg">#F4F6FA</color>
+</resources>

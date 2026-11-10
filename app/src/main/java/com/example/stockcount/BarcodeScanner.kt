@@ -58,7 +58,7 @@ fun BarcodeScanner(onResult: (String) -> Unit, onClose: () -> Unit) {
             Text(
                 "Point the camera at a barcode",
                 color = Color.White,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp)
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 24.dp)
             )
         } else if (asked) {
             Text(
@@ -69,7 +69,7 @@ fun BarcodeScanner(onResult: (String) -> Unit, onClose: () -> Unit) {
         }
         Button(
             onClick = onClose,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 32.dp)
         ) { Text("Cancel") }
     }
 }
