@@ -9,13 +9,18 @@ data class Item(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val barcode: String = "",
+    /** Material number (from the imported material list, or typed in). */
+    val material: String = "",
     val shelf: String = "",
     val quantity: Int = 0,
     /** Unit of measure for ENTRY_UOM, e.g. EA or CAR. */
     val uom: String = "EA",
     /** Checked = counted and confirmed there are none (not just "not counted yet"). */
     val zeroCount: Boolean = false,
-)
+) {
+    /** What to show in the list: description if there is one, else material, else barcode. */
+    fun label() = name.ifBlank { material }.ifBlank { barcode }
+}
 
 @Dao
 interface ItemDao {
@@ -48,14 +53,47 @@ interface ItemDao {
     suspend fun change(id: Long, delta: Int)
 }
 
-@Database(entities = [Item::class], version = 1)
+/** One row of the imported material list. A material can have several barcodes (e.g. EA and CAR). */
+@Entity(tableName = "materials")
+data class Material(
+    @PrimaryKey val barcode: String,
+    val material: String,
+    val uom: String,
+    val description: String = "",
+)
+
+@Dao
+abstract class MaterialDao {
+    @Query("SELECT * FROM materials WHERE barcode = :code LIMIT 1")
+    abstract suspend fun byBarcode(code: String): Material?
+
+    @Query("SELECT COUNT(*) FROM materials")
+    abstract fun count(): Flow<Int>
+
+    @Query("DELETE FROM materials")
+    abstract suspend fun deleteAll()
+
+    @Upsert
+    abstract suspend fun saveAll(list: List<Material>)
+
+    /** Replaces the whole list with a freshly imported one. */
+    @Transaction
+    open suspend fun replaceAll(list: List<Material>) {
+        deleteAll()
+        saveAll(list)
+    }
+}
+
+@Database(entities = [Item::class, Material::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun items(): ItemDao
+    abstract fun materials(): MaterialDao
 
     companion object {
         @Volatile private var instance: AppDb? = null
         fun get(context: Context): AppDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDb::class.java, "stock.db")
+                .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }
     }

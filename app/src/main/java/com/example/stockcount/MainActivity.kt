@@ -23,26 +23,56 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val dao = AppDb.get(this).items()
+        val db = AppDb.get(this)
         val settings = Settings(this)
         setContent {
-            MaterialTheme { StockScreen(dao, settings) }
+            MaterialTheme { StockScreen(db.items(), db.materials(), settings) }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StockScreen(dao: ItemDao, settings: Settings) {
+fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val itemsFlow = remember { dao.all() }
     val items by itemsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val materialCountFlow = remember { materials.count() }
+    val materialCount by materialCountFlow.collectAsStateWithLifecycle(initialValue = 0)
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val msg = try {
+                val result = withContext(Dispatchers.IO) { MaterialImport.read(context, uri) }
+                if (result.materials.isEmpty()) {
+                    "No materials found. The file needs MATERIAL, BARCODE and UOM columns."
+                } else {
+                    materials.replaceAll(result.materials)
+                    "Imported ${result.materials.size} barcodes" +
+                        if (result.skipped > 0) " (${result.skipped} rows skipped, missing material or barcode)" else ""
+                }
+            } catch (e: Exception) {
+                "Import failed: ${e.message}"
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+    fun importMaterials() = importLauncher.launch(
+        arrayOf(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/csv", "text/comma-separated-values", "text/plain", "application/octet-stream"
+        )
+    )
     var search by remember { mutableStateOf("") }
     var branch by remember { mutableStateOf(settings.branch) }
     var shelf by remember { mutableStateOf(settings.shelf) }
@@ -55,18 +85,31 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
 
     fun handleScan(code: String) {
         scope.launch {
-            // Same barcode on the current shelf -> +1. Otherwise add it to this shelf.
+            // Same barcode on the current shelf -> +1.
             val found = dao.byBarcode(code, shelf.trim())
             if (found != null) {
                 dao.change(found.id, 1)
-                Toast.makeText(context, "${found.name}: ${found.quantity + 1}", Toast.LENGTH_SHORT).show()
-            } else {
-                val known = dao.anyWithBarcode(code)
-                editing = Item(
-                    name = known?.name ?: "", barcode = code, shelf = shelf.trim(),
-                    uom = known?.uom ?: "EA", quantity = 1
-                )
+                Toast.makeText(context, "${found.label()}: ${found.quantity + 1}", Toast.LENGTH_SHORT).show()
+                return@launch
             }
+            // Barcode is in the material list -> add it to this shelf with quantity 1, no typing needed.
+            val m = materials.byBarcode(code)
+            if (m != null) {
+                val item = Item(
+                    name = m.description, barcode = code, material = m.material, uom = m.uom,
+                    shelf = shelf.trim(), quantity = 1
+                )
+                dao.save(item)
+                Toast.makeText(context, "${item.label()}: 1", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            // Unknown barcode -> ask for the details.
+            val known = dao.anyWithBarcode(code)
+            editing = Item(
+                name = known?.name ?: "", barcode = code, material = known?.material ?: "",
+                shelf = shelf.trim(), uom = known?.uom ?: "EA", quantity = 1
+            )
+            Toast.makeText(context, "Barcode $code is not in the material list", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -90,6 +133,10 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Import material list") },
+                            onClick = { menuOpen = false; importMaterials() }
+                        )
                         DropdownMenuItem(
                             text = { Text("Start new count (delete all items)") },
                             onClick = { menuOpen = false; confirmClear = true }
@@ -151,9 +198,20 @@ fun StockScreen(dao: ItemDao, settings: Settings) {
                     modifier = Modifier.weight(1f)
                 )
             }
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (materialCount == 0) "No material list loaded" else "Material list: $materialCount barcodes",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { importMaterials() }) { Text("Upload materials") }
+            }
             val shown = items.filter {
                 search.isBlank() || it.name.contains(search, true) || it.barcode.contains(search) ||
-                    it.shelf.contains(search, true)
+                    it.material.contains(search, true) || it.shelf.contains(search, true)
             }
             Text(
                 "${shown.size} items · ${shown.sumOf { it.quantity }} units",
@@ -211,9 +269,10 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (B
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text(item.name, fontWeight = FontWeight.Medium)
+            Text(item.label(), fontWeight = FontWeight.Medium)
             val details = listOfNotNull(
                 item.shelf.takeIf { it.isNotEmpty() }?.let { "Shelf $it" },
+                item.material.takeIf { it.isNotEmpty() && item.name.isNotEmpty() },
                 item.barcode.takeIf { it.isNotEmpty() },
                 item.uom
             ).joinToString(" · ")
@@ -246,6 +305,7 @@ fun ItemRow(item: Item, onMinus: () -> Unit, onPlus: () -> Unit, onZeroCount: (B
 fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDelete: (() -> Unit)?) {
     var name by remember { mutableStateOf(item.name) }
     var barcode by remember { mutableStateOf(item.barcode) }
+    var material by remember { mutableStateOf(item.material) }
     var shelf by remember { mutableStateOf(item.shelf) }
     var uom by remember { mutableStateOf(item.uom) }
     var qty by remember { mutableStateOf(item.quantity.toString()) }
@@ -257,8 +317,9 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
         title = { Text(if (item.id == 0L) "New item" else "Edit item") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true)
-                OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode (optional)") }, singleLine = true)
+                OutlinedTextField(material, { material = it }, label = { Text("Material") }, singleLine = true)
+                OutlinedTextField(name, { name = it }, label = { Text("Description (optional)") }, singleLine = true)
+                OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(
@@ -278,9 +339,9 @@ fun EditDialog(item: Item, onDismiss: () -> Unit, onSave: (Item) -> Unit, onDele
         },
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank(),
+                enabled = material.isNotBlank() || name.isNotBlank(),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },
