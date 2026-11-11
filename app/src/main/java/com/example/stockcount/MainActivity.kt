@@ -133,8 +133,14 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var stockType by remember { mutableStateOf(settings.stockType) }
     var storageLoc by remember { mutableStateOf(settings.storageLoc) }
     fun doExport() {
+        if (branch.isBlank() || planDate.isBlank()) {
+            detailsOpen = true
+            notify("Enter Branch ID and Plan date before exporting")
+            return
+        }
         scope.launch {
             val list = dao.allOnce()
+            if (list.isEmpty()) { notify("Nothing counted yet, no file created"); return@launch }
             val result = withContext(Dispatchers.IO) { XlsxExport.export(context, branch.trim(), planDate.trim(), list) }
             snackbar.currentSnackbarData?.dismiss()
             val answer = snackbar.showSnackbar(
