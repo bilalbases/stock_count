@@ -14,7 +14,7 @@ import java.net.URL
  */
 object CloudUpload {
 
-    class Config(context: Context) {
+    class Config(private val context: Context) {
         private val prefs = context.getSharedPreferences("cloud", Context.MODE_PRIVATE)
         var url: String
             get() = prefs.getString("url", "") ?: ""
