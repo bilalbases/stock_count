@@ -13,6 +13,12 @@ A simple app for counting stock.
   DataWedge profile called "StockCount" that sends scans to the app (keystroke output off). A trigger
   scan counts the barcode immediately, the same as a camera scan. If it doesn't react, open DataWedge
   on the device and check that the StockCount profile is enabled and linked to com.example.stockcount.
+- **Two pages:** *Count* (count details, current shelf, and the item just scanned) and *Counted*
+  (everything saved so far, in the order it was counted). Swipe right-to-left or tap the tabs.
+- **Scanning** shows the item on the Count page with an **empty quantity box**. Type the quantity and
+  press Save (or Done on the keyboard); the item moves to the Counted page. Scanning a barcode that is
+  already counted on the same shelf adds the new quantity to it. Scanning the next item while a
+  quantity is typed saves the previous one automatically.
 - **Scan barcode** (camera): a barcode in the material list is added to the current shelf with its material
   and unit, no typing needed; if the barcode is already on the current shelf, its count goes up by 1.
   A barcode that is not in the material list opens the item page ("Barcode not found"): correct the

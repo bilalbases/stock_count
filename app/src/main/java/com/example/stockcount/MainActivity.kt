@@ -37,6 +37,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
@@ -165,7 +169,46 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     val drafts = remember { mutableStateMapOf<Long, String>() }
     var deleting by remember { mutableStateOf<Item?>(null) }
     val focusManager = LocalFocusManager.current
+    var scanning by remember { mutableStateOf(false) }
+    val pager = rememberPagerState(pageCount = { 2 })
+
+    // The item just scanned, waiting for the counter to type its quantity (not saved yet).
+    var current by remember { mutableStateOf<Item?>(null) }
+    var currentQty by remember { mutableStateOf("") }
+    var currentZero by remember { mutableStateOf(false) }
+    // Same barcode already counted on this shelf (the new quantity is added to it).
+    var currentExisting by remember { mutableStateOf<Item?>(null) }
+
+    /** Saves the scanned item with the typed quantity. Returns false if no quantity was entered. */
+    fun saveCurrent(): Boolean {
+        val item = current ?: return true
+        val q = currentQty.toIntOrNull()
+        if (q == null && !currentZero) {
+            notify("Enter the quantity for ${item.label()}")
+            return false
+        }
+        val qty = q ?: 0
+        val zero = currentZero && qty == 0
+        val existing = currentExisting
+        current = null; currentQty = ""; currentZero = false; currentExisting = null
+        scope.launch {
+            if (existing != null) {
+                val total = existing.quantity + qty
+                dao.save(existing.copy(quantity = total, zeroCount = zero && total == 0))
+                notify("✓ ${item.label()}  +$qty  →  $total ${item.uom}")
+            } else {
+                dao.save(item.copy(quantity = qty, zeroCount = zero))
+                notify("✓ Saved ${item.label()}  →  $qty ${item.uom}")
+            }
+        }
+        return true
+    }
     fun saveAll() {
+        // Save the scanned item first (if any); stop if its quantity is still empty.
+        if (current != null) {
+            if (!saveCurrent()) return
+            if (drafts.isEmpty()) { focusManager.clearFocus(); return }
+        }
         scope.launch {
             val current = dao.allOnce().associateBy { it.id }
             var changed = 0
@@ -181,28 +224,28 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             notify(if (changed > 0) "Saved · $changed quantities updated" else "Saved")
         }
     }
-    var scanning by remember { mutableStateOf(false) }
     // Barcode that was scanned but is not in the material list.
     var notFound by remember { mutableStateOf<String?>(null) }
 
     fun handleScan(code: String) {
         scope.launch {
-            // Same barcode on the current shelf -> +1.
-            val found = dao.byBarcode(code, shelf.trim())
-            if (found != null) {
-                dao.change(found.id, 1)
-                notify("✓ ${found.label()}  →  ${found.quantity + 1} ${found.uom}")
-                return@launch
+            // A previous scan is still waiting: keep it if a quantity was typed, otherwise drop it.
+            if (current != null) {
+                if (currentQty.isNotEmpty() || currentZero) saveCurrent()
+                else { current = null; currentExisting = null }
             }
-            // Barcode is in the material list -> add it to this shelf with quantity 1, no typing needed.
+            val existing = dao.byBarcode(code, shelf.trim())
             val m = materials.byBarcode(code)
-            if (m != null) {
-                val item = Item(
-                    name = m.description, barcode = code, material = m.material, uom = m.uom,
-                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 1
+            if (existing != null || m != null) {
+                // Show it on the Count page with an empty quantity box for the counter to fill in.
+                current = existing?.copy() ?: Item(
+                    name = m!!.description, barcode = code, material = m.material, uom = m.uom,
+                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 0
                 )
-                dao.save(item)
-                notify("✓ Added ${item.label()}  →  1 ${item.uom}")
+                currentExisting = existing
+                currentQty = ""
+                currentZero = false
+                pager.animateScrollToPage(0)
                 return@launch
             }
             // Unknown barcode -> open the item page so the barcode can be corrected or details typed in.
@@ -296,7 +339,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         contentColor = MaterialTheme.colorScheme.onSecondary,
                         icon = { Icon(Icons.Filled.Check, contentDescription = null) },
                         text = {
-                            Text(if (drafts.isEmpty()) "Save" else "Save (${drafts.size})", fontWeight = FontWeight.SemiBold)
+                            val pending = drafts.size + (if (current != null) 1 else 0)
+                            Text(if (pending == 0) "Save" else "Save ($pending)", fontWeight = FontWeight.SemiBold)
                         }
                     )
                     ExtendedFloatingActionButton(
@@ -321,171 +365,221 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             search.isBlank() || it.name.contains(search, true) || it.barcode.contains(search) ||
                 it.material.contains(search, true) || it.shelf.contains(search, true)
         }
-        LazyColumn(
-            Modifier.padding(padding).fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // ---- Count details (collapsible) ----
-            item {
-                ElevatedCard(
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    shape = MaterialTheme.shapes.large
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { detailsOpen = !detailsOpen }.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            val counted = items.sortedBy { it.id }   // in the order they were counted
+            TabRow(selectedTabIndex = pager.currentPage) {
+                Tab(
+                    selected = pager.currentPage == 0,
+                    onClick = { scope.launch { pager.animateScrollToPage(0) } },
+                    text = { Text("Count") }
+                )
+                Tab(
+                    selected = pager.currentPage == 1,
+                    onClick = { scope.launch { pager.animateScrollToPage(1) } },
+                    text = { Text("Counted (${counted.size})") }
+                )
+            }
+            HorizontalPager(state = pager, modifier = Modifier.weight(1f)) { page ->
+                if (page == 0) {
+                    // ================= Count page: details, shelf and the item just scanned =================
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Count details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                            if (!detailsOpen) {
-                                val summary = listOf(
-                                    "Branch ${branch.ifBlank { "–" }}",
-                                    "Plan ${planDate.ifBlank { "today" }}",
-                                    "SLoc ${storageLoc.ifBlank { "–" }}",
-                                    "Type ${stockType.ifBlank { "–" }}",
-                                ).joinToString("  ·  ")
-                                Text(
-                                    summary, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                        Icon(
-                            if (detailsOpen) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                            contentDescription = if (detailsOpen) "Hide" else "Show"
-                        )
-                    }
-                    AnimatedVisibility(detailsOpen) {
-                        Column(
-                            Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                    // ---- Count details (collapsible) ----
+                    item {
+                        ElevatedCard(
+                            colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                            shape = MaterialTheme.shapes.large
                         ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                OutlinedTextField(
-                                    value = branch,
-                                    onValueChange = { branch = it; settings.branch = it },
-                                    label = { Text("Branch ID (Plant)") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OutlinedTextField(
-                                    value = planDate,
-                                    onValueChange = { v ->
-                                        planDate = v.filter { it.isDigit() || it == '.' }.take(10); settings.planDate = planDate
-                                    },
-                                    label = { Text("Plan date") },
-                                    placeholder = { Text("dd.mm.yyyy") },
-                                    isError = planDate.isNotEmpty() && !XlsxExport.isValidDate(planDate),
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                OutlinedTextField(
-                                    value = storageLoc,
-                                    onValueChange = { storageLoc = it.uppercase(); settings.storageLoc = storageLoc },
-                                    label = { Text("Storage location") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                OutlinedTextField(
-                                    value = stockType,
-                                    onValueChange = { stockType = it.uppercase(); settings.stockType = stockType },
-                                    label = { Text("Stock type") },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable { detailsOpen = !detailsOpen }.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Count details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                    if (!detailsOpen) {
+                                        val summary = listOf(
+                                            "Branch ${branch.ifBlank { "–" }}",
+                                            "Plan ${planDate.ifBlank { "today" }}",
+                                            "SLoc ${storageLoc.ifBlank { "–" }}",
+                                            "Type ${stockType.ifBlank { "–" }}",
+                                        ).joinToString("  ·  ")
+                                        Text(
+                                            summary, style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                                 Icon(
-                                    AppIcons.Inventory, null, Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    if (detailsOpen) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = if (detailsOpen) "Hide" else "Show"
                                 )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    if (materialCount == 0) "No material list loaded" else "Material list: $materialCount barcodes",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (materialCount == 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                FilledTonalButton(onClick = { importMaterials() }, contentPadding = PaddingValues(horizontal = 12.dp)) {
-                                    Icon(AppIcons.Upload, null, Modifier.size(18.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Upload materials")
+                            }
+                            AnimatedVisibility(detailsOpen) {
+                                Column(
+                                    Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        OutlinedTextField(
+                                            value = branch,
+                                            onValueChange = { branch = it; settings.branch = it },
+                                            label = { Text("Branch ID (Plant)") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = planDate,
+                                            onValueChange = { v ->
+                                                planDate = v.filter { it.isDigit() || it == '.' }.take(10); settings.planDate = planDate
+                                            },
+                                            label = { Text("Plan date") },
+                                            placeholder = { Text("dd.mm.yyyy") },
+                                            isError = planDate.isNotEmpty() && !XlsxExport.isValidDate(planDate),
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        OutlinedTextField(
+                                            value = storageLoc,
+                                            onValueChange = { storageLoc = it.uppercase(); settings.storageLoc = storageLoc },
+                                            label = { Text("Storage location") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = stockType,
+                                            onValueChange = { stockType = it.uppercase(); settings.stockType = stockType },
+                                            label = { Text("Stock type") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            AppIcons.Inventory, null, Modifier.size(18.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            if (materialCount == 0) "No material list loaded" else "Material list: $materialCount barcodes",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (materialCount == 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        FilledTonalButton(onClick = { importMaterials() }, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                                            Icon(AppIcons.Upload, null, Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("Upload materials")
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            // ---- Shelf + search ----
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = shelf,
-                        onValueChange = { shelf = it; settings.shelf = it },
-                        label = { Text("Current shelf") },
-                        singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = search,
-                        onValueChange = { search = it },
-                        placeholder = { Text("Search") },
-                        leadingIcon = { Icon(Icons.Filled.Search, null) },
-                        singleLine = true,
-                        shape = MaterialTheme.shapes.medium,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        ),
-                        modifier = Modifier.weight(1.2f)
-                    )
-                }
-            }
+                        item {
+                            OutlinedTextField(
+                                value = shelf,
+                                onValueChange = { shelf = it; settings.shelf = it },
+                                label = { Text("Current shelf") },
+                                singleLine = true,
+                                shape = MaterialTheme.shapes.medium,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        item {
+                            val item = current
+                            if (item == null) {
+                                EmptyState(
+                                    title = "Scan a barcode",
+                                    text = if (counted.isEmpty()) "Tap Scan or press the scanner trigger.\nUpload your material list first."
+                                    else "Tap Scan or press the scanner trigger.\nSwipe left to see the ${counted.size} counted items."
+                                )
+                            } else {
+                                CurrentItemCard(
+                                    item = item,
+                                    alreadyCounted = currentExisting?.quantity,
+                                    qty = currentQty,
+                                    onQtyChange = { currentQty = it.filter(Char::isDigit).take(7); if (currentQty.isNotEmpty() && currentQty != "0") currentZero = false },
+                                    zeroCount = currentZero,
+                                    onZeroCount = { currentZero = it; if (it) currentQty = "0" },
+                                    onSave = { if (saveCurrent()) focusManager.clearFocus() },
+                                    onCancel = { current = null; currentExisting = null; currentQty = ""; currentZero = false; focusManager.clearFocus() }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // ================= Counted page: everything saved so far =================
+                    val shown = counted.filter {
+                        search.isBlank() || it.name.contains(search, true) || it.barcode.contains(search) ||
+                            it.material.contains(search, true) || it.shelf.contains(search, true)
+                    }
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        item {
+                            OutlinedTextField(
+                                value = search,
+                                onValueChange = { search = it },
+                                placeholder = { Text("Search counted items") },
+                                leadingIcon = { Icon(Icons.Filled.Search, null) },
+                                singleLine = true,
+                                shape = MaterialTheme.shapes.medium,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    // ---- Totals ----
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            StatTile("Items", shown.size.toString(), Modifier.weight(1f))
+                            StatTile("Units", shown.sumOf { it.quantity }.toString(), Modifier.weight(1f))
+                            StatTile("Zero count", shown.count { it.zeroCount }.toString(), Modifier.weight(1f))
+                        }
+                    }
 
-            // ---- Totals ----
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StatTile("Items", shown.size.toString(), Modifier.weight(1f))
-                    StatTile("Units", shown.sumOf { it.quantity }.toString(), Modifier.weight(1f))
-                    StatTile("Zero count", shown.count { it.zeroCount }.toString(), Modifier.weight(1f))
+                        if (counted.isEmpty()) {
+                            item { EmptyState(title = "Nothing counted yet", text = "Items appear here after you save their quantity.") }
+                        }
+                    items(shown, key = { it.id }) { item ->
+                        fun step(delta: Int) {
+                            val base = drafts[item.id]?.toIntOrNull() ?: item.quantity
+                            drafts.remove(item.id)
+                            val q = (base + delta).coerceAtLeast(0)
+                            scope.launch { dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)) }
+                        }
+                        ItemCard(
+                            item = item,
+                            qtyText = drafts[item.id] ?: item.quantity.toString(),
+                            onQtyChange = { drafts[item.id] = it.filter(Char::isDigit).take(7) },
+                            onMinus = { step(-1) },
+                            onPlus = { step(1) },
+                            onZeroCount = { checked ->
+                                drafts.remove(item.id)
+                                scope.launch { dao.setZeroCount(item.id, checked) }
+                            },
+                            onDelete = { deleting = item },
+                            onDone = { saveAll() }
+                        )
+                    }
+                    }
                 }
-            }
-
-            if (items.isEmpty()) {
-                item { EmptyState() }
-            }
-
-            items(shown, key = { it.id }) { item ->
-                fun step(delta: Int) {
-                    val base = drafts[item.id]?.toIntOrNull() ?: item.quantity
-                    drafts.remove(item.id)
-                    val q = (base + delta).coerceAtLeast(0)
-                    scope.launch { dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)) }
-                }
-                ItemCard(
-                    item = item,
-                    qtyText = drafts[item.id] ?: item.quantity.toString(),
-                    onQtyChange = { drafts[item.id] = it.filter(Char::isDigit).take(7) },
-                    onMinus = { step(-1) },
-                    onPlus = { step(1) },
-                    onZeroCount = { checked ->
-                        drafts.remove(item.id)
-                        scope.launch { dao.setZeroCount(item.id, checked) }
-                    },
-                    onDelete = { deleting = item },
-                    onDone = { saveAll() }
-                )
             }
         }
     }
@@ -495,7 +589,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             EditDialog(
                 item = Item(
                     name = "", barcode = code, shelf = shelf.trim(), stockType = stockType.trim(),
-                    storageLoc = storageLoc.trim(), quantity = 1
+                    storageLoc = storageLoc.trim(), quantity = 0
                 ),
                 notFoundCode = code,
                 lookup = { materials.byBarcode(it) },
@@ -584,7 +678,7 @@ fun StatTile(label: String, value: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EmptyState() {
+fun EmptyState(title: String = "No items counted yet", text: String = "Tap Scan to start counting.") {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -596,10 +690,10 @@ fun EmptyState() {
             Icon(AppIcons.Barcode, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
         }
         Spacer(Modifier.height(16.dp))
-        Text("No items counted yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Tap Scan to start counting.\nUpload your material list first.",
+            text,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -743,7 +837,7 @@ fun EditDialog(
     var uom by remember { mutableStateOf(item.uom) }
     var stockType by remember { mutableStateOf(item.stockType) }
     var storageLoc by remember { mutableStateOf(item.storageLoc) }
-    var qty by remember { mutableStateOf(item.quantity.toString()) }
+    var qty by remember { mutableStateOf(if (notFoundCode != null) "" else item.quantity.toString()) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -815,7 +909,7 @@ fun EditDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = material.isNotBlank() || name.isNotBlank(),
+                enabled = (material.isNotBlank() || name.isNotBlank()) && (qty.isNotEmpty() || zeroCount),
                 onClick = {
                     onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
@@ -823,4 +917,73 @@ fun EditDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+/** The item just scanned: big empty quantity box for the counter to fill in, then Save. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun CurrentItemCard(
+    item: Item,
+    alreadyCounted: Int?,
+    qty: String,
+    onQtyChange: (String) -> Unit,
+    zeroCount: Boolean,
+    onZeroCount: (Boolean) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(item.barcode, item.shelf) { runCatching { focus.requestFocus() } }
+
+    ElevatedCard(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Scanned", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(item.label(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            val sub = listOfNotNull(
+                item.material.takeIf { it.isNotEmpty() && item.name.isNotEmpty() },
+                item.barcode.takeIf { it.isNotEmpty() }
+            ).joinToString("  ·  ")
+            if (sub.isNotEmpty()) {
+                Text(sub, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Tag(item.uom, strong = true)
+                if (item.shelf.isNotEmpty()) Tag("Shelf ${item.shelf}")
+                if (item.storageLoc.isNotEmpty()) Tag("SLoc ${item.storageLoc}")
+                if (item.stockType.isNotEmpty()) Tag("Type ${item.stockType}")
+            }
+            if (alreadyCounted != null) {
+                Text(
+                    "Already counted on this shelf: $alreadyCounted ${item.uom}. The quantity you enter is added to it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            OutlinedTextField(
+                value = qty,
+                onValueChange = onQtyChange,
+                label = { Text("Quantity (${item.uom})") },
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(fontSize = 28.sp, fontWeight = FontWeight.Bold),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onSave() }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = zeroCount, onCheckedChange = onZeroCount)
+                Text("Zero count", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onCancel) { Text("Cancel") }
+                Spacer(Modifier.width(4.dp))
+                Button(
+                    onClick = onSave,
+                    enabled = qty.isNotEmpty() || zeroCount,
+                    colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White)
+                ) { Text("Save") }
+            }
+        }
+    }
 }
