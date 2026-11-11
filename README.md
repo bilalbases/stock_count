@@ -22,7 +22,7 @@ A simple app for counting stock.
   checkbox (sets quantity to 0; pressing + clears it) and a **Delete** button (asks first).
 - **Save** (bottom left) stores typed quantities. − / +, zero count and scans are saved straight away.
   Items are only added by scanning; there is no manual add form.
-- **Share icon** exports an Excel file (.xlsx) in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (Storage location field, editable per item; shelf ID stays in the app only), ITEM, MATERIAL (from the material list), STOCK_TYPE (Stock type field, editable per item), ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X).
+- **Share icon** saves an Excel file (.xlsx) to Downloads/StockCount on the device and then opens the share menu. The file is in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (Storage location field, editable per item; shelf ID stays in the app only), ITEM, MATERIAL (from the material list), STOCK_TYPE (Stock type field, editable per item), ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X).
 - **⋮ > Start new count** deletes all items.
 - Works fully offline. Everything is saved on the phone (Room database), and the
   barcode model (ML Kit, bundled) is inside the APK. Scanning uses the camera through

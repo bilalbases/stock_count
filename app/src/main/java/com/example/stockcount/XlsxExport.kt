@@ -1,6 +1,10 @@
 package com.example.stockcount
 
+import android.content.ContentValues
 import android.content.Context
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.content.Intent
 import androidx.core.content.FileProvider
 import java.io.File
@@ -32,7 +36,11 @@ object XlsxExport {
     fun isValidDate(s: String): Boolean =
         Regex("""\d{2}\.\d{2}\.\d{4}""").matches(s) && runCatching { dateFormat().parse(s) }.isSuccess
 
-    fun share(context: Context, branch: String, planDate: String, items: List<Item>) {
+    /**
+     * Writes the export, keeps a copy in Downloads/StockCount, then opens the share menu.
+     * Returns where the copy was saved (or null if saving to Downloads failed).
+     */
+    fun share(context: Context, branch: String, planDate: String, items: List<Item>): String? {
         val now = Date()
         val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(now)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
@@ -40,6 +48,7 @@ object XlsxExport {
             .replace(Regex("[^A-Za-z0-9._-]"), "-")
         val file = File(dir, "$name.xlsx")
         write(file, rows(branch, planDate, items, now))
+        val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
 
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -49,6 +58,33 @@ object XlsxExport {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(send, "Export stock count"))
+        return saved
+    }
+
+    private const val FOLDER = "StockCount"
+    private const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    /** Copies [file] to the public Downloads/StockCount folder. Returns the path shown to the user. */
+    private fun saveToDownloads(context: Context, file: File): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, XLSX)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER")
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Could not create file in Downloads")
+            resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+                ?: error("Could not write file in Downloads")
+        } else {
+            // Android 9 and older: needs the storage permission (asked for before exporting).
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), FOLDER)
+            dir.mkdirs()
+            file.copyTo(File(dir, file.name), overwrite = true)
+        }
+        return "Downloads/$FOLDER/${file.name}"
     }
 
     /** One row per item. Values that are whole numbers are written as numbers, like the template. */

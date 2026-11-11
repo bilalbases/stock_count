@@ -1,6 +1,10 @@
 package com.example.stockcount
 
+import android.Manifest
 import android.content.BroadcastReceiver
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -124,6 +128,24 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var planDate by remember { mutableStateOf(settings.planDate) }
     var stockType by remember { mutableStateOf(settings.stockType) }
     var storageLoc by remember { mutableStateOf(settings.storageLoc) }
+    fun doExport() {
+        scope.launch {
+            val list = dao.allOnce()
+            val saved = XlsxExport.share(context, branch.trim(), planDate.trim(), list)
+            notify(if (saved != null) "Saved to $saved" else "Shared (could not save a copy to Downloads)")
+        }
+    }
+    // Android 9 and older need permission to write to Downloads.
+    val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { doExport() }
+    fun exportExcel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            doExport()
+        }
+    }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
@@ -218,7 +240,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 },
                 actions = {
                     IconButton(onClick = {
-                        scope.launch { XlsxExport.share(context, branch.trim(), planDate.trim(), dao.allOnce()) }
+                        exportExcel()
                     }) { Icon(Icons.Filled.Share, contentDescription = "Export Excel") }
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -234,7 +256,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                             leadingIcon = { Icon(Icons.Filled.Share, null) },
                             onClick = {
                                 menuOpen = false
-                                scope.launch { XlsxExport.share(context, branch.trim(), planDate.trim(), dao.allOnce()) }
+                                exportExcel()
                             }
                         )
                         HorizontalDivider()
