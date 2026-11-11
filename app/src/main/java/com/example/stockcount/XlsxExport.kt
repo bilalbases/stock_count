@@ -102,6 +102,10 @@ object XlsxExport {
     }
 
     fun write(file: File, rows: List<List<String>>) {
+        // Lock the file: sheet and workbook are protected with a random password that is not
+        // stored anywhere, so the count cannot be changed in Excel (it can still be opened,
+        // read, printed and uploaded to SAP).
+        val lock = legacyHash(randomPassword())
         ZipOutputStream(file.outputStream()).use { zip ->
             fun put(name: String, text: String) {
                 zip.putNextEntry(ZipEntry(name))
@@ -121,17 +125,18 @@ object XlsxExport {
 </Relationships>""")
             put("xl/workbook.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<workbookProtection lockStructure="1" lockWindows="1" workbookPassword="$lock"/>
 <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
 </workbook>""")
             put("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>""")
-            put("xl/worksheets/sheet1.xml", sheet(rows))
+            put("xl/worksheets/sheet1.xml", sheet(rows, lock))
         }
     }
 
-    private fun sheet(rows: List<List<String>>): String {
+    private fun sheet(rows: List<List<String>>, lock: String): String {
         val sb = StringBuilder("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>""")
         (listOf(HEADERS) + rows).forEachIndexed { r, row ->
@@ -146,7 +151,32 @@ object XlsxExport {
             }
             sb.append("</row>")
         }
-        return sb.append("</sheetData></worksheet>").toString()
+        sb.append("</sheetData>")
+        // sheet="1" locks every cell; also block formatting, inserting and deleting rows/columns.
+        sb.append(
+            "<sheetProtection password=\"$lock\" sheet=\"1\" objects=\"1\" scenarios=\"1\" " +
+                "formatCells=\"1\" formatColumns=\"1\" formatRows=\"1\" insertColumns=\"1\" insertRows=\"1\" " +
+                "insertHyperlinks=\"1\" deleteColumns=\"1\" deleteRows=\"1\" sort=\"1\" autoFilter=\"1\" pivotTables=\"1\"/>"
+        )
+        return sb.append("</worksheet>").toString()
+    }
+
+    private fun randomPassword(): String {
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+        val rnd = java.security.SecureRandom()
+        return (1..15).map { chars[rnd.nextInt(chars.length)] }.joinToString("")
+    }
+
+    /** Excel's sheet/workbook protection password hash (legacy 16-bit algorithm). */
+    private fun legacyHash(password: String): String {
+        var hash = 0
+        for (c in password.reversed()) {
+            hash = ((hash shr 14) and 1) or ((hash shl 1) and 0x7fff)
+            hash = hash xor c.code
+        }
+        hash = ((hash shr 14) and 1) or ((hash shl 1) and 0x7fff)
+        hash = hash xor password.length xor 0xCE4B
+        return "%04X".format(hash)
     }
 
     private fun esc(s: String) = s
