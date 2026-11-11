@@ -15,8 +15,9 @@ A simple app for counting stock.
   on the device and check that the StockCount profile is enabled and linked to com.example.stockcount.
 - **Scan barcode** (camera): a barcode in the material list is added to the current shelf with its material
   and unit, no typing needed; if the barcode is already on the current shelf, its count goes up by 1.
-  A barcode that is not in the material list adds nothing and shows a "Barcode not found"
-  message with a "Scan again" button.
+  A barcode that is not in the material list opens the item page ("Barcode not found"): correct the
+  barcode (the +0 button adds a leading zero) and tap Look up to fill in material and unit from the
+  list, or type the details yourself, then Save. Cancel adds nothing.
 - Each item card has **− / +** buttons, a quantity you can tap and type into, a **Zero count**
   checkbox (sets quantity to 0; pressing + clears it) and a **Delete** button (asks first).
 - **Save** (bottom left) stores typed quantities. − / +, zero count and scans are saved straight away.

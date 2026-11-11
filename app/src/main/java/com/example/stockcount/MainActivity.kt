@@ -172,7 +172,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 notify("✓ Added ${item.label()}  →  1 ${item.uom}")
                 return@launch
             }
-            // Unknown barcode -> nothing is added; show a clear message.
+            // Unknown barcode -> open the item page so the barcode can be corrected or details typed in.
             notFound = code
         }
     }
@@ -458,19 +458,33 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     }
 
     notFound?.let { code ->
-        AlertDialog(
-            onDismissRequest = { notFound = null },
-            icon = { Icon(AppIcons.Barcode, null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Barcode not found") },
-            text = {
-                Text(
-                    "Barcode $code is not in the material list. Nothing was added.",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            },
-            confirmButton = { TextButton(onClick = { notFound = null; scanning = true }) { Text("Scan again") } },
-            dismissButton = { TextButton(onClick = { notFound = null }) { Text("OK") } }
-        )
+        key(code) {
+            EditDialog(
+                item = Item(
+                    name = "", barcode = code, shelf = shelf.trim(), stockType = stockType.trim(),
+                    storageLoc = storageLoc.trim(), quantity = 1
+                ),
+                notFoundCode = code,
+                lookup = { materials.byBarcode(it) },
+                onDismiss = { notFound = null },
+                onDelete = null,
+                onSave = { newItem ->
+                    notFound = null
+                    scope.launch {
+                        // If this barcode is already counted on this shelf, add to it instead of making a duplicate.
+                        val existing = newItem.barcode.takeIf { it.isNotEmpty() }?.let { dao.byBarcode(it, newItem.shelf) }
+                        if (existing != null) {
+                            val q = existing.quantity + newItem.quantity
+                            dao.save(existing.copy(quantity = q, zeroCount = if (q > 0) false else existing.zeroCount))
+                            notify("✓ ${existing.label()}  →  $q ${existing.uom}")
+                        } else {
+                            dao.save(newItem)
+                            notify("✓ Added ${newItem.label()}  →  ${newItem.quantity} ${newItem.uom}")
+                        }
+                    }
+                }
+            )
+        }
     }
 
     if (showAbout) {
@@ -676,4 +690,104 @@ private fun StepButton(symbol: String, onClick: () -> Unit, primary: Boolean = f
             contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) { Text(symbol, fontSize = 22.sp, fontWeight = FontWeight.Medium) }
+}
+
+@Composable
+fun EditDialog(
+    item: Item,
+    onDismiss: () -> Unit,
+    onSave: (Item) -> Unit,
+    onDelete: (() -> Unit)?,
+    notFoundCode: String? = null,
+    lookup: (suspend (String) -> Material?)? = null,
+) {
+    val scope = rememberCoroutineScope()
+    var lookupMsg by remember { mutableStateOf<String?>(null) }
+    var name by remember { mutableStateOf(item.name) }
+    var barcode by remember { mutableStateOf(item.barcode) }
+    var material by remember { mutableStateOf(item.material) }
+    var shelf by remember { mutableStateOf(item.shelf) }
+    var uom by remember { mutableStateOf(item.uom) }
+    var stockType by remember { mutableStateOf(item.stockType) }
+    var storageLoc by remember { mutableStateOf(item.storageLoc) }
+    var qty by remember { mutableStateOf(item.quantity.toString()) }
+    var zeroCount by remember { mutableStateOf(item.zeroCount) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (notFoundCode != null) "Barcode not found" else if (item.id == 0L) "New item" else "Edit item") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (notFoundCode != null) {
+                    Text(
+                        "$notFoundCode is not in the material list. Correct the barcode (for example add a leading 0) and tap Look up, or fill in the details yourself.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                OutlinedTextField(material, { material = it }, label = { Text("Material") }, singleLine = true)
+                OutlinedTextField(name, { name = it }, label = { Text("Description (optional)") }, singleLine = true)
+                OutlinedTextField(
+                    barcode, { barcode = it.trim(); lookupMsg = null }, label = { Text("Barcode") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    trailingIcon = {
+                        if (lookup != null) {
+                            TextButton(onClick = { barcode = "0$barcode"; lookupMsg = null }) { Text("+0") }
+                        }
+                    }
+                )
+                if (lookup != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FilledTonalButton(onClick = {
+                            scope.launch {
+                                val m = lookup(barcode)
+                                if (m != null) {
+                                    material = m.material
+                                    uom = m.uom
+                                    if (m.description.isNotBlank()) name = m.description
+                                    lookupMsg = "✓ Found: ${m.material}"
+                                } else {
+                                    lookupMsg = "Still not found"
+                                }
+                            }
+                        }) { Text("Look up") }
+                        Spacer(Modifier.width(12.dp))
+                        lookupMsg?.let {
+                            Text(
+                                it, style = MaterialTheme.typography.bodyMedium,
+                                color = if (it.startsWith("✓")) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
+                OutlinedTextField(storageLoc, { storageLoc = it.uppercase() }, label = { Text("Storage location") }, singleLine = true)
+                OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
+                OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
+                OutlinedTextField(
+                    qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
+                    Text("Zero count")
+                }
+                if (onDelete != null) {
+                    TextButton(onClick = { if (confirmDelete) onDelete() else confirmDelete = true }) {
+                        Text(if (confirmDelete) "Tap again to delete" else "Delete item", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = material.isNotBlank() || name.isNotBlank(),
+                onClick = {
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
