@@ -18,8 +18,10 @@
 *&     (MARC-MMSTA) is set. To treat only some status codes as inactive,
 *&     fill GR_INACTIVE in INITIALIZATION below.
 *&
-*& Output: PC file in dialog, or application server file (AL11).
-*& Background jobs (SM36) always write to the application server.
+*& Output: ALV list (default; in background it goes to the spool),
+*&         PC file (dialog only), or application server file (AL11).
+*& With "Save to PC" in a background job, the file is written to the
+*& application server instead.
 *&---------------------------------------------------------------------*
 REPORT zmm_stockcount_matlist.
 
@@ -48,7 +50,8 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
 SELECTION-SCREEN END OF BLOCK b1.
 
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
-  PARAMETERS: p_pc    RADIOBUTTON GROUP out DEFAULT 'X',
+  PARAMETERS: p_alv   RADIOBUTTON GROUP out DEFAULT 'X',
+              p_pc    RADIOBUTTON GROUP out,
               p_file  TYPE string LOWER CASE DEFAULT 'C:\temp\material_list.xlsx',
               p_appl  RADIOBUTTON GROUP out,
               p_afile TYPE string LOWER CASE DEFAULT '/usr/sap/trans/stockcount/material_list.xlsx'.
@@ -69,11 +72,18 @@ START-OF-SELECTION.
     MESSAGE |No active articles with barcodes found for branch { p_werks }| TYPE 'S' DISPLAY LIKE 'E'.
     RETURN.
   ENDIF.
+  " ALV: shown on screen in dialog; in a background job it goes to the spool.
+  IF p_alv = abap_true.
+    PERFORM show_alv.
+    RETURN.
+  ENDIF.
+
   PERFORM build_xlsx.
   IF gv_xlsx IS INITIAL.
     RETURN.
   ENDIF.
 
+  " Background jobs cannot write to the PC: use the application server there.
   IF sy-batch = abap_true OR p_appl = abap_true.
     PERFORM write_appl_server.
   ELSE.
@@ -171,6 +181,33 @@ FORM select_data.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
+*& ALV list. Use the toolbar "Export > Spreadsheet" to save as Excel;
+*& the columns are text, so barcodes keep all digits.
+FORM show_alv.
+  DATA: lo_salv TYPE REF TO cl_salv_table,
+        lo_cols TYPE REF TO cl_salv_columns_table,
+        lx_err  TYPE REF TO cx_root.
+
+  TRY.
+      cl_salv_table=>factory( IMPORTING r_salv_table = lo_salv
+                              CHANGING  t_table      = gt_out ).
+      lo_salv->get_functions( )->set_all( abap_true ).
+      lo_salv->get_display_settings( )->set_list_header(
+        |Stock Count material list - branch { p_werks } - { lines( gt_out ) } barcodes| ).
+      lo_salv->get_display_settings( )->set_striped_pattern( abap_true ).
+      lo_cols = lo_salv->get_columns( ).
+      lo_cols->set_optimize( abap_true ).
+      PERFORM set_header USING lo_cols 'MATERIAL'.
+      PERFORM set_header USING lo_cols 'BARCODE'.
+      PERFORM set_header USING lo_cols 'UOM'.
+      PERFORM set_header USING lo_cols 'DESCRIPTION'.
+      lo_salv->display( ).
+    CATCH cx_root INTO lx_err.
+      MESSAGE lx_err->get_text( ) TYPE 'S' DISPLAY LIKE 'E'.
+  ENDTRY.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
 *& Build the .xlsx in memory with SALV (works in dialog and background)
 FORM build_xlsx.
   DATA: lo_salv TYPE REF TO cl_salv_table,
@@ -265,6 +302,7 @@ ENDFORM.
 *& Text elements to create in SE38 > Goto > Text elements:
 *&   Text symbols:    001 = Selection,  002 = Output
 *&   Selection texts: P_WERKS = Branch (plant), S_MATNR = Material,
+*&                    P_ALV = Show list (ALV),
 *&                    P_PC = Save to PC,  P_FILE = PC file,
 *&                    P_APPL = Save to app. server,
 *&                    P_AFILE = App. server file (AL11)
