@@ -1,7 +1,10 @@
 name: Build APK
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,7 +16,17 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew && ./gradlew assembleDebug
+      - run: cp app/build/outputs/apk/debug/app-debug.apk stock-count.apk
       - uses: actions/upload-artifact@v4
         with:
           name: stock-count-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: stock-count.apk
+      # Public download that needs no GitHub login:
+      # https://github.com/<owner>/<repo>/releases/latest/download/stock-count.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Stock Count build ${{ github.run_number }}
+          body: ${{ github.event.head_commit.message }}
+          files: stock-count.apk
+          make_latest: true

@@ -34,7 +34,8 @@ A simple app for counting stock.
 - **Command line:** `./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`
   (needs the Android SDK, `ANDROID_HOME` set).
 - **GitHub:** push this folder to a repo; the workflow in `.github/workflows/build.yml`
-  builds the APK and attaches it to the run as `stock-count-apk`.
+  builds the APK and publishes it as a release. Latest APK (no login needed):
+  https://github.com/bilalbases/stock_count/releases/latest/download/stock-count.apk
 
 Min Android version: 7.0 (API 24).
 
