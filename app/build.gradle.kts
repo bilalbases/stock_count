@@ -25,7 +25,7 @@ android {
 
     // One fixed signing key for every build, so a new APK installs over the old one
     // (keeps counts, material list and settings; no uninstall needed).
-    // The key file is not in the repo: the GitHub build writes it from the SIGNING_KEYSTORE secret.
+    // Fixed key kept in the repo (owner chose this) so every build installs over the previous one.
     val keyFile = file("stockcount.jks")
     signingConfigs {
         create("fixed") {
