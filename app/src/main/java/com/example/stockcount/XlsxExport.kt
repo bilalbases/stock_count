@@ -74,6 +74,61 @@ object XlsxExport {
         return Result(file, saved)
     }
 
+    class MergeResult(val file: File, val savedTo: String?, val files: Int, val inputRows: Int, val outputRows: Int)
+
+    /**
+     * Merges several PI export files (e.g. from 30 PDTs) into one: rows with the same plant,
+     * storage location, material, stock type and unit are added together; ITEM is renumbered.
+     */
+    fun merge(context: Context, uris: List<android.net.Uri>): MergeResult {
+        class Group(val plant: String, val sloc: String, val material: String, val stockType: String, val uom: String) {
+            var qty = 0L; var zero = false
+        }
+        val groups = LinkedHashMap<String, Group>()
+        var planDate = ""
+        var inputRows = 0
+        for (uri in uris) {
+            val rows = MaterialImport.readRows(context, uri).filter { r -> r.any { it.isNotBlank() } }
+            if (rows.isEmpty()) continue
+            val header = rows.first().map { it.trim().uppercase() }
+            fun idx(name: String) = header.indexOf(name)
+            val iPlan = idx("PLAN_DATE"); val iPlant = idx("PLANT"); val iSloc = idx("STGE_LOC")
+            val iMat = idx("MATERIAL"); val iType = idx("STOCK_TYPE"); val iQty = idx("ENTRY_QNT")
+            val iUom = idx("ENTRY_UOM"); val iZero = idx("ZERO_COUNT")
+            require(iMat >= 0 && iQty >= 0) { "Not a stock count export: ${uri.lastPathSegment}" }
+            for (r in rows.drop(1)) {
+                fun c(i: Int) = if (i >= 0) r.getOrNull(i)?.trim().orEmpty() else ""
+                if (c(iMat).isEmpty()) continue
+                inputRows++
+                if (planDate.isEmpty()) planDate = c(iPlan)
+                val key = listOf(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)).joinToString("|")
+                val g = groups.getOrPut(key) { Group(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)) }
+                g.qty += c(iQty).toBigDecimalOrNull()?.toLong() ?: 0L
+                g.zero = g.zero || c(iZero).equals("X", ignoreCase = true)
+            }
+        }
+        val now = Date()
+        val today = dateFormat().format(now)
+        val year = SimpleDateFormat("yyyy", Locale.US).format(now)
+        val out = groups.values
+            .sortedWith(compareBy({ it.plant }, { it.sloc }, { it.material }))
+            .mapIndexed { i, g ->
+                listOf(
+                    today, planDate.ifBlank { today }, year, g.plant, g.sloc, (i + 1).toString(),
+                    g.material, g.stockType, g.qty.toString(), g.uom, if (g.zero && g.qty == 0L) "X" else ""
+                )
+            }
+        val plant = groups.values.firstOrNull()?.plant.orEmpty()
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(now)
+        val name = listOfNotNull("PI_MERGED", plant.ifBlank { null }, stamp).joinToString("_")
+            .replace(Regex("[^A-Za-z0-9._-]"), "-")
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = File(dir, "$name.xlsx")
+        write(file, out)
+        val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
+        return MergeResult(file, saved, uris.size, inputRows, out.size)
+    }
+
     /** Opens the share menu (email, WhatsApp, Drive...) for an exported file. */
     fun shareFile(context: Context, file: File) {
         val stamp = file.nameWithoutExtension

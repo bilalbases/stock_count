@@ -161,6 +161,48 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             doExport()
         }
     }
+    // ---- Google Sheet upload ----
+    val cloud = remember { CloudUpload.Config(context) }
+    var showCloud by remember { mutableStateOf(false) }
+    var uploading by remember { mutableStateOf(false) }
+    fun uploadToSheet() {
+        if (!cloud.isSet) { showCloud = true; return }
+        if (uploading) return
+        uploading = true
+        notify("Uploading to Google Sheet…")
+        scope.launch {
+            val msg = try {
+                val list = dao.allOnce()
+                val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
+                "✓ Uploaded $n items to Google Sheet as ${cloud.device}"
+            } catch (e: Exception) {
+                "Upload failed: ${e.message ?: "no connection"}"
+            }
+            uploading = false
+            notify(msg)
+        }
+    }
+
+    // ---- Merge several PI export files (offline) ----
+    val mergeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val res = withContext(Dispatchers.IO) { XlsxExport.merge(context, uris) }
+                snackbar.currentSnackbarData?.dismiss()
+                val answer = snackbar.showSnackbar(
+                    message = "Merged ${res.files} files (${res.inputRows} rows → ${res.outputRows}). " +
+                        (res.savedTo?.let { "Saved to $it" } ?: "Could not save to Downloads"),
+                    actionLabel = "Share",
+                    withDismissAction = true,
+                    duration = SnackbarDuration.Long
+                )
+                if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFile(context, res.file)
+            } catch (e: Exception) {
+                notify("Merge failed: ${e.message}")
+            }
+        }
+    }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
@@ -312,6 +354,24 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                 menuOpen = false
                                 exportExcel()
                             }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Upload to Google Sheet") },
+                            onClick = { menuOpen = false; uploadToSheet() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Merge export files") },
+                            onClick = {
+                                menuOpen = false
+                                mergeLauncher.launch(arrayOf(
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "application/octet-stream"
+                                ))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Cloud upload settings") },
+                            onClick = { menuOpen = false; showCloud = true }
                         )
                         HorizontalDivider()
                         DropdownMenuItem(
@@ -612,6 +672,35 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
             )
         }
+    }
+
+    if (showCloud) {
+        var url by remember { mutableStateOf(cloud.url) }
+        var key by remember { mutableStateOf(cloud.key) }
+        var device by remember { mutableStateOf(cloud.device) }
+        AlertDialog(
+            onDismissRequest = { showCloud = false },
+            title = { Text("Cloud upload settings") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Counts are sent to one Google Sheet so all PDTs end up in one file. " +
+                            "Counting still works offline; only the upload needs Wi-Fi.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(url, { url = it.trim() }, label = { Text("Web app URL (…/exec)") }, singleLine = true)
+                    OutlinedTextField(key, { key = it }, label = { Text("Key") }, singleLine = true)
+                    OutlinedTextField(device, { device = it }, label = { Text("Device name") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = url.startsWith("https://") && key.isNotBlank() && device.isNotBlank(),
+                    onClick = { cloud.url = url; cloud.key = key; cloud.device = device; showCloud = false; notify("Cloud upload settings saved") }
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { showCloud = false }) { Text("Cancel") } }
+        )
     }
 
     if (showAbout) {

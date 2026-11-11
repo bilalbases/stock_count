@@ -30,7 +30,15 @@ A simple app for counting stock.
   Items are only added by scanning; there is no manual add form.
 - **Export icon** saves one Excel file (.xlsx) to Downloads/StockCount on the device. A message with a **Share** button appears if you want to send it (email, WhatsApp, Drive). If nothing changed since the last export, no new file is created; exporting again in the same minute replaces the file. The Save button never creates files. The file is in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (Storage location field, editable per item; shelf ID stays in the app only), ITEM, MATERIAL (from the material list), STOCK_TYPE (Stock type field, editable per item), ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X). The exported file is locked (sheet and workbook protection with a random password) so it cannot be edited in Excel.
 - **⋮ > Start new count** deletes all items.
-- Works fully offline. Everything is saved on the phone (Room database), and the
+- **Merging many PDTs into one file** (quantities of the same plant + storage location + material +
+  stock type + unit are added into one row, ITEM is renumbered):
+  - *Online, Google Sheet:* set up once with [google-sheet/Code.gs](google-sheet/Code.gs) (steps at the
+    top of that file). On each PDT: ⋮ > Cloud upload settings (Web app URL, key, device name), then
+    ⋮ > Upload to Google Sheet. Uploading again replaces that device's rows, so nothing is counted twice.
+    In the Sheet: menu Stock Count > Build PI sheet, then File > Download > Microsoft Excel.
+  - *Offline:* collect the exported files on one device (WhatsApp, email, USB), then ⋮ > Merge export
+    files and select them all. The merged file `PI_MERGED_...xlsx` is saved to Downloads/StockCount.
+- Works fully offline (only the optional Google Sheet upload needs internet). Everything is saved on the phone (Room database), and the
   barcode model (ML Kit, bundled) is inside the APK. Scanning uses the camera through
   CameraX, so the app asks for camera permission on the first scan.
 

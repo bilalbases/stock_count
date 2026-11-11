@@ -19,7 +19,10 @@ object MaterialImport {
 
     class Result(val materials: List<Material>, val skipped: Int)
 
-    fun read(context: Context, uri: Uri): Result {
+    fun read(context: Context, uri: Uri): Result = toMaterials(readRows(context, uri))
+
+    /** Reads the first sheet of an .xlsx (or a CSV) as rows of text. */
+    fun readRows(context: Context, uri: Uri): List<List<String>> {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: error("Could not open the file")
         val rows = if (bytes.size > 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
@@ -27,7 +30,7 @@ object MaterialImport {
         } else {
             readCsv(String(bytes, Charsets.UTF_8).removePrefix("﻿"))
         }
-        return toMaterials(rows)
+        return rows
     }
 
     fun toMaterials(rows: List<List<String>>): Result {
