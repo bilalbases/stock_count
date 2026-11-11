@@ -1,15 +1,25 @@
 *&---------------------------------------------------------------------*
 *& Report ZMM_STOCKCOUNT_MATLIST
 *&---------------------------------------------------------------------*
-*& Downloads the material list for the Stock Count app as a CSV file:
+*& Downloads the material/article list for the Stock Count app as CSV:
 *&   MATERIAL,BARCODE,UOM,DESCRIPTION
-*& One row per barcode (EAN/UPC). A material with an EA barcode and a
+*& One row per barcode (EAN/UPC). An article with an EA barcode and a
 *& CAR barcode gives two rows. Upload the file in the app with
 *& "Upload materials".
 *&
-*& Sources: MARA/MARC (materials, optionally per plant),
-*&          MEAN (all EANs per unit) + MARM-EAN11 (main EAN per unit),
-*&          MAKT (description in the logon language).
+*& Output:
+*&   - PC file (dialog only), or
+*&   - Application server file (AL11). Used automatically in background
+*&     jobs (SM36), where a PC download is not possible.
+*&
+*& Inactive articles are skipped (checkbox, on by default):
+*&   - deletion flag at client level (MARA-LVORM) or plant level (MARC-LVORM)
+*&   - cross-plant status (MARA-MSTAE) or plant status (MARC-MMSTA) set.
+*&     Fill "Inactive status codes" to treat only those codes as inactive;
+*&     leave it empty to treat ANY status as inactive.
+*&
+*& Sources: MARA/MARC, MEAN (all EANs per unit) + MARM-EAN11 (main EAN
+*&          per unit), MAKT (description in the logon language).
 *&---------------------------------------------------------------------*
 REPORT zmm_stockcount_matlist.
 
@@ -31,11 +41,18 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
                   s_matnr FOR mara-matnr,
                   s_mtart FOR mara-mtart,
                   s_matkl FOR mara-matkl.
-  PARAMETERS:     p_nodel AS CHECKBOX DEFAULT 'X'.     " Skip materials flagged for deletion
 SELECTION-SCREEN END OF BLOCK b1.
 
+SELECTION-SCREEN BEGIN OF BLOCK b3 WITH FRAME TITLE TEXT-003.
+  PARAMETERS:     p_inact AS CHECKBOX DEFAULT 'X'.     " Skip inactive articles
+  SELECT-OPTIONS: s_stat  FOR mara-mstae NO INTERVALS. " Status codes that mean inactive (empty = any)
+SELECTION-SCREEN END OF BLOCK b3.
+
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
-  PARAMETERS: p_file TYPE string LOWER CASE DEFAULT 'C:\temp\material_list.csv'.
+  PARAMETERS: p_pc   RADIOBUTTON GROUP out DEFAULT 'X' USER-COMMAND out,
+              p_file TYPE string LOWER CASE DEFAULT 'C:\temp\material_list.csv',
+              p_appl RADIOBUTTON GROUP out,
+              p_afile TYPE string LOWER CASE DEFAULT '/usr/sap/trans/stockcount/material_list.csv'.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
@@ -45,61 +62,87 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
 START-OF-SELECTION.
   PERFORM select_data.
   IF gt_rows IS INITIAL.
-    MESSAGE 'No materials with barcodes found for this selection' TYPE 'S' DISPLAY LIKE 'E'.
+    MESSAGE 'No active materials with barcodes found for this selection' TYPE 'S' DISPLAY LIKE 'E'.
     RETURN.
   ENDIF.
   PERFORM build_csv.
-  PERFORM download.
+
+  " Background jobs cannot write to the PC: always use the application server there.
+  IF sy-batch = abap_true OR p_appl = abap_true.
+    PERFORM write_appl_server.
+  ELSE.
+    PERFORM download_pc.
+  ENDIF.
 
 *&---------------------------------------------------------------------*
 FORM select_data.
   TYPES: BEGIN OF ty_mat,
            matnr TYPE mara-matnr,
-         END OF ty_mat.
-  DATA: lt_mat  TYPE SORTED TABLE OF ty_mat WITH UNIQUE KEY matnr,
+           lvorm TYPE mara-lvorm,
+           mstae TYPE mara-mstae,
+           plvor TYPE marc-lvorm,
+           mmsta TYPE marc-mmsta,
+         END OF ty_mat,
+         BEGIN OF ty_key,
+           matnr TYPE mara-matnr,
+         END OF ty_key.
+  DATA: lt_raw  TYPE STANDARD TABLE OF ty_mat,
+        lt_mat  TYPE SORTED TABLE OF ty_key WITH UNIQUE KEY matnr,
+        ls_key  TYPE ty_key,
         lt_mean TYPE STANDARD TABLE OF ty_row,
         lt_marm TYPE STANDARD TABLE OF ty_row,
         lt_makt TYPE HASHED TABLE OF makt WITH UNIQUE KEY matnr spras,
-        lr_lvorm TYPE RANGE OF mara-lvorm,
-        ls_lvorm LIKE LINE OF lr_lvorm.
+        ls_makt TYPE makt.
+  FIELD-SYMBOLS: <m> TYPE ty_mat,
+                 <r> TYPE ty_row.
 
-  " Deletion flag filter: empty range = all materials; with the checkbox only non-deleted ones
-  IF p_nodel = abap_true.
-    ls_lvorm-sign = 'I'. ls_lvorm-option = 'EQ'. ls_lvorm-low = space.
-    APPEND ls_lvorm TO lr_lvorm.
-  ENDIF.
-
-  " 1. Materials (restricted to plant if given)
+  " 1. Materials with their deletion flags and statuses
   IF s_werks[] IS INITIAL.
-    SELECT matnr FROM mara
-      INTO TABLE lt_mat
+    SELECT matnr lvorm mstae FROM mara
+      INTO CORRESPONDING FIELDS OF TABLE lt_raw
       WHERE matnr IN s_matnr
         AND mtart IN s_mtart
-        AND matkl IN s_matkl
-        AND lvorm IN lr_lvorm.
+        AND matkl IN s_matkl.
   ELSE.
-    SELECT DISTINCT a~matnr FROM mara AS a
+    SELECT a~matnr a~lvorm a~mstae c~lvorm AS plvor c~mmsta
+      FROM mara AS a
       INNER JOIN marc AS c ON c~matnr = a~matnr
-      INTO TABLE lt_mat
+      INTO CORRESPONDING FIELDS OF TABLE lt_raw
       WHERE a~matnr IN s_matnr
         AND a~mtart IN s_mtart
         AND a~matkl IN s_matkl
-        AND c~werks IN s_werks
-        AND a~lvorm IN lr_lvorm
-        AND c~lvorm IN lr_lvorm.
+        AND c~werks IN s_werks.
   ENDIF.
+
+  " 2. Drop inactive articles. With several plants, an article is kept if it
+  "    is active in at least one of them.
+  LOOP AT lt_raw ASSIGNING <m>.
+    IF p_inact = abap_true.
+      IF <m>-lvorm IS NOT INITIAL OR <m>-plvor IS NOT INITIAL.
+        CONTINUE.
+      ENDIF.
+      IF <m>-mstae IS NOT INITIAL AND ( s_stat[] IS INITIAL OR <m>-mstae IN s_stat ).
+        CONTINUE.
+      ENDIF.
+      IF <m>-mmsta IS NOT INITIAL AND ( s_stat[] IS INITIAL OR <m>-mmsta IN s_stat ).
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+    ls_key-matnr = <m>-matnr.
+    INSERT ls_key INTO TABLE lt_mat.      " duplicates are ignored (sorted unique)
+  ENDLOOP.
+  FREE lt_raw.
   IF lt_mat IS INITIAL.
     RETURN.
   ENDIF.
 
-  " 2. All barcodes per unit (MEAN) ...
+  " 3. All barcodes per unit (MEAN) plus the main barcode per unit (MARM)
   SELECT matnr ean11 meinh FROM mean
     INTO CORRESPONDING FIELDS OF TABLE lt_mean
     FOR ALL ENTRIES IN lt_mat
     WHERE matnr = lt_mat-matnr
       AND ean11 <> space.
 
-  " ... plus the main barcode per unit (MARM), in case MEAN is not maintained
   SELECT matnr ean11 meinh FROM marm
     INTO CORRESPONDING FIELDS OF TABLE lt_marm
     FOR ALL ENTRIES IN lt_mat
@@ -111,15 +154,13 @@ FORM select_data.
   SORT gt_rows BY ean11 matnr meinh.
   DELETE ADJACENT DUPLICATES FROM gt_rows COMPARING ean11.   " one row per barcode
 
-  " 3. Descriptions
+  " 4. Descriptions
   SELECT * FROM makt
     INTO TABLE lt_makt
     FOR ALL ENTRIES IN lt_mat
     WHERE matnr = lt_mat-matnr
       AND spras = sy-langu.
 
-  FIELD-SYMBOLS <r> TYPE ty_row.
-  DATA ls_makt TYPE makt.
   LOOP AT gt_rows ASSIGNING <r>.
     READ TABLE lt_makt INTO ls_makt WITH TABLE KEY matnr = <r>-matnr spras = sy-langu.
     IF sy-subrc = 0.
@@ -134,13 +175,14 @@ ENDFORM.
 FORM build_csv.
   DATA: lv_matnr TYPE char40,
         lv_uom   TYPE char3,
+        lv_ean   TYPE string,
         lv_line  TYPE string.
   FIELD-SYMBOLS <r> TYPE ty_row.
 
   APPEND 'MATERIAL,BARCODE,UOM,DESCRIPTION' TO gt_lines.
 
   LOOP AT gt_rows ASSIGNING <r>.
-    " External formats: material without leading zeros, unit as shown to users (e.g. EA, CAR)
+    " External formats: material without leading zeros, unit as users see it (e.g. EA, CAR)
     CALL FUNCTION 'CONVERSION_EXIT_MATN1_OUTPUT'
       EXPORTING input  = <r>-matnr
       IMPORTING output = lv_matnr.
@@ -155,7 +197,9 @@ FORM build_csv.
     ENDIF.
 
     CONDENSE: lv_matnr, lv_uom.
-    lv_line = |{ lv_matnr },{ condense( val = <r>-ean11 ) },{ lv_uom },|.
+    lv_ean = <r>-ean11.
+    CONDENSE lv_ean.
+    lv_line = |{ lv_matnr },{ lv_ean },{ lv_uom },|.
     PERFORM csv_field USING <r>-maktx CHANGING lv_line.
     APPEND lv_line TO gt_lines.
   ENDLOOP.
@@ -173,23 +217,44 @@ FORM csv_field USING iv_text TYPE clike CHANGING cv_line TYPE string.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-FORM download.
+FORM download_pc.
   " UTF-8 with BOM so Arabic and other non-English descriptions open correctly
   cl_gui_frontend_services=>gui_download(
     EXPORTING
-      filename                = p_file
-      filetype                = 'ASC'
-      codepage                = '4110'
-      write_bom               = abap_true
+      filename  = p_file
+      filetype  = 'ASC'
+      codepage  = '4110'
+      write_bom = abap_true
     CHANGING
-      data_tab                = gt_lines
+      data_tab  = gt_lines
     EXCEPTIONS
-      OTHERS                  = 1 ).
+      OTHERS    = 1 ).
   IF sy-subrc = 0.
     MESSAGE |{ lines( gt_lines ) - 1 } barcodes downloaded to { p_file }| TYPE 'S'.
   ELSE.
     MESSAGE |Download to { p_file } failed| TYPE 'S' DISPLAY LIKE 'E'.
   ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+FORM write_appl_server.
+  DATA: lv_line TYPE string,
+        lv_msg  TYPE string.
+
+  OPEN DATASET p_afile FOR OUTPUT IN TEXT MODE ENCODING UTF-8 WITH BYTE-ORDER MARK
+    MESSAGE lv_msg.
+  IF sy-subrc <> 0.
+    MESSAGE |Cannot open { p_afile }: { lv_msg }| TYPE 'S' DISPLAY LIKE 'E'.
+    RETURN.
+  ENDIF.
+
+  LOOP AT gt_lines INTO lv_line.
+    TRANSFER lv_line TO p_afile.
+  ENDLOOP.
+  CLOSE DATASET p_afile.
+
+  " Shows in the job log (SM37) and on screen
+  MESSAGE |{ lines( gt_lines ) - 1 } barcodes written to { p_afile }| TYPE 'S'.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -217,8 +282,17 @@ ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& Text elements to create in SE38 > Goto > Text elements:
-*&   Text symbols:  001 = Selection,  002 = Output file
+*&   Text symbols:  001 = Selection
+*&                  002 = Output
+*&                  003 = Inactive articles
 *&   Selection texts: S_WERKS = Plant, S_MATNR = Material,
 *&     S_MTART = Material type, S_MATKL = Material group,
-*&     P_NODEL = Skip deleted materials, P_FILE = File name
+*&     P_INACT = Skip inactive articles,
+*&     S_STAT  = Inactive status codes (empty = any),
+*&     P_PC    = Save to PC,            P_FILE  = PC file,
+*&     P_APPL  = Save to app. server,   P_AFILE = App. server file (AL11)
+*&
+*& Background job: SM36, step = this report with a variant that has
+*& "Save to app. server" selected (it is used automatically in background
+*& anyway). Make sure the folder in P_AFILE exists and is writable (AL11).
 *&---------------------------------------------------------------------*
