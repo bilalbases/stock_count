@@ -118,6 +118,7 @@ object XlsxExport {
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>""")
             put("_rels/.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -131,14 +132,31 @@ object XlsxExport {
             put("xl/_rels/workbook.xml.rels", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>""")
+            // Styles: Excel only enforces sheet protection on cells whose style is "locked",
+            // so every cell style here is explicitly locked. Style 1 = bold header.
+            put("xl/styles.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="2">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyProtection="1"><protection locked="1" hidden="0"/></xf>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyProtection="1"><protection locked="1" hidden="0"/></xf>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>""")
             put("xl/worksheets/sheet1.xml", sheet(rows, lock))
         }
     }
 
     private fun sheet(rows: List<List<String>>, lock: String): String {
         val sb = StringBuilder("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>""")
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<cols><col min="1" max="2" width="12" customWidth="1"/><col min="3" max="6" width="10" customWidth="1"/><col min="7" max="7" width="16" customWidth="1"/><col min="8" max="8" width="12" customWidth="1"/><col min="9" max="10" width="12" customWidth="1"/><col min="11" max="11" width="13" customWidth="1"/></cols>
+<sheetData>""")
         (listOf(HEADERS) + rows).forEachIndexed { r, row ->
             sb.append("<row r=\"${r + 1}\">")
             row.forEachIndexed { c, v ->
@@ -146,8 +164,9 @@ object XlsxExport {
                 val ref = "${'A' + c}${r + 1}"
                 // MATERIAL (column G) always stays text so long codes keep every digit.
                 val numeric = r > 0 && c != 6 && Regex("""-?\d{1,9}""").matches(v)
-                if (numeric) sb.append("<c r=\"$ref\"><v>$v</v></c>")
-                else sb.append("<c r=\"$ref\" t=\"inlineStr\"><is><t>").append(esc(v)).append("</t></is></c>")
+                val style = if (r == 0) 1 else 0   // 1 = bold header; both styles are locked
+                if (numeric) sb.append("<c r=\"$ref\" s=\"$style\"><v>$v</v></c>")
+                else sb.append("<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t>").append(esc(v)).append("</t></is></c>")
             }
             sb.append("</row>")
         }
