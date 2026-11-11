@@ -17,10 +17,10 @@ object CloudUpload {
     class Config(private val context: Context) {
         private val prefs = context.getSharedPreferences("cloud", Context.MODE_PRIVATE)
         var url: String
-            get() = prefs.getString("url", "") ?: ""
+            get() = prefs.getString("url", null)?.takeIf { it.isNotBlank() } ?: BuildConfig.SHEET_URL
             set(v) = prefs.edit().putString("url", v.trim()).apply()
         var key: String
-            get() = prefs.getString("key", "") ?: ""
+            get() = prefs.getString("key", null)?.takeIf { it.isNotBlank() } ?: BuildConfig.SHEET_KEY
             set(v) = prefs.edit().putString("key", v.trim()).apply()
         var device: String
             get() = prefs.getString("device", null) ?: defaultDevice(context)

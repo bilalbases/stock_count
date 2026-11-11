@@ -13,13 +13,36 @@ android {
         applicationId = "com.example.stockcount"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        // Each GitHub build gets a higher number so it installs as an update over the old one.
+        val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = 100 + run
+        versionName = "1.$run"
+        // Google Sheet upload defaults, taken from the GitHub repo secrets SHEET_URL / SHEET_KEY.
+        fun quoted(name: String) = "\"" + (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        buildConfigField("String", "SHEET_URL", quoted("SHEET_URL"))
+        buildConfigField("String", "SHEET_KEY", quoted("SHEET_KEY"))
+    }
+
+    // One fixed signing key for every build, so a new APK installs over the old one
+    // (keeps counts, material list and settings; no uninstall needed).
+    // The key file is not in the repo: the GitHub build writes it from the SIGNING_KEYSTORE secret.
+    val keyFile = file("stockcount.jks")
+    signingConfigs {
+        create("fixed") {
+            storeFile = keyFile
+            storePassword = "stockcount"
+            keyAlias = "stockcount"
+            keyPassword = "stockcount"
+        }
     }
 
     buildTypes {
+        debug {
+            if (keyFile.exists()) signingConfig = signingConfigs.getByName("fixed")
+        }
         release {
             isMinifyEnabled = false
+            if (keyFile.exists()) signingConfig = signingConfigs.getByName("fixed")
         }
     }
     compileOptions {
