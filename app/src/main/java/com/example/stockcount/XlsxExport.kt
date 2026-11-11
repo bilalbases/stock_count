@@ -1,5 +1,6 @@
 package com.example.stockcount
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
@@ -40,7 +41,14 @@ object XlsxExport {
      * Writes the export, keeps a copy in Downloads/StockCount, then opens the share menu.
      * Returns where the copy was saved (or null if saving to Downloads failed).
      */
-    fun share(context: Context, branch: String, planDate: String, items: List<Item>): String? {
+    class Result(val file: File, val savedTo: String?)
+
+    /**
+     * Creates the export and saves it to Downloads/StockCount (one file per export; exporting
+     * again in the same minute replaces that file instead of making a duplicate).
+     * Sharing is a separate, optional step: [shareFile].
+     */
+    fun export(context: Context, branch: String, planDate: String, items: List<Item>): Result {
         val now = Date()
         val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(now)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
@@ -49,16 +57,20 @@ object XlsxExport {
         val file = File(dir, "$name.xlsx")
         write(file, rows(branch, planDate, items, now))
         val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
+        return Result(file, saved)
+    }
 
+    /** Opens the share menu (email, WhatsApp, Drive...) for an exported file. */
+    fun shareFile(context: Context, file: File) {
+        val stamp = file.nameWithoutExtension
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Stock count $branch $stamp".replace("  ", " "))
+            putExtra(Intent.EXTRA_SUBJECT, "Stock count $stamp")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, "Export stock count"))
-        return saved
+        context.startActivity(Intent.createChooser(send, "Share stock count"))
     }
 
     private const val FOLDER = "StockCount"
@@ -73,9 +85,17 @@ object XlsxExport {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER")
             }
             val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            val relPath = "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER/"
+            // Reuse a file with the same name (same branch and minute) instead of creating "name (1).xlsx".
+            val existing = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+                arrayOf(file.name, relPath), null
+            )?.use { c -> if (c.moveToFirst()) ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
+            val uri = existing ?: resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: error("Could not create file in Downloads")
-            resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            resolver.openOutputStream(uri, "wt")?.use { out -> file.inputStream().use { it.copyTo(out) } }
                 ?: error("Could not write file in Downloads")
         } else {
             // Android 9 and older: needs the storage permission (asked for before exporting).

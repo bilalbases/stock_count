@@ -131,8 +131,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     fun doExport() {
         scope.launch {
             val list = dao.allOnce()
-            val saved = XlsxExport.share(context, branch.trim(), planDate.trim(), list)
-            notify(if (saved != null) "Saved to $saved" else "Shared (could not save a copy to Downloads)")
+            val result = withContext(Dispatchers.IO) { XlsxExport.export(context, branch.trim(), planDate.trim(), list) }
+            snackbar.currentSnackbarData?.dismiss()
+            val answer = snackbar.showSnackbar(
+                message = result.savedTo?.let { "Saved to $it" } ?: "Could not save to Downloads",
+                actionLabel = "Share",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long
+            )
+            if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFile(context, result.file)
         }
     }
     // Android 9 and older need permission to write to Downloads.
