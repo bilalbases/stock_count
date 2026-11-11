@@ -14,9 +14,11 @@ android {
         minSdk = 24
         targetSdk = 35
         // Each GitHub build gets a higher number so it installs as an update over the old one.
+        // versionName is set by hand (the version shown in the app and on the release);
+        // versionCode follows the GitHub build number so every build is a newer update.
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = 100 + run
-        versionName = "1.$run"
+        versionName = "1.28"
         // Google Sheet upload defaults, taken from the GitHub repo secrets SHEET_URL / SHEET_KEY.
         fun quoted(name: String) = "\"" + (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
         buildConfigField("String", "SHEET_URL", quoted("SHEET_URL"))

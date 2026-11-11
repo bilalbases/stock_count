@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+concurrency:
+  group: build
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -15,15 +18,13 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Signing key
-        env:
-          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
-        run: if [ -n "$SIGNING_KEYSTORE" ]; then echo "$SIGNING_KEYSTORE" | base64 -d > app/stockcount.jks; fi
       - run: chmod +x gradlew && ./gradlew assembleDebug
         env:
           SHEET_URL: ${{ secrets.SHEET_URL }}
           SHEET_KEY: ${{ secrets.SHEET_KEY }}
-      - run: cp app/build/outputs/apk/debug/app-debug.apk stock-count.apk
+      - run: |
+          cp app/build/outputs/apk/debug/app-debug.apk stock-count.apk
+          echo "APP_VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: stock-count-apk
@@ -32,8 +33,8 @@ jobs:
       # https://github.com/<owner>/<repo>/releases/latest/download/stock-count.apk
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Stock Count build ${{ github.run_number }}
+          tag_name: v${{ env.APP_VERSION }}-build-${{ github.run_number }}
+          name: Stock Count ${{ env.APP_VERSION }}
           body: ${{ github.event.head_commit.message }}
           files: stock-count.apk
           make_latest: true
