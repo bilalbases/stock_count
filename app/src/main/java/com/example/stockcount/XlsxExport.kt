@@ -41,7 +41,7 @@ object XlsxExport {
      * Writes the export, keeps a copy in Downloads/StockCount, then opens the share menu.
      * Returns where the copy was saved (or null if saving to Downloads failed).
      */
-    class Result(val file: File, val savedTo: String?)
+    class Result(val file: File, val savedTo: String?, val unchanged: Boolean = false)
 
     /**
      * Creates the export and saves it to Downloads/StockCount (one file per export; exporting
@@ -54,9 +54,23 @@ object XlsxExport {
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val name = listOfNotNull("PI", branch.ifBlank { null }, stamp).joinToString("_")
             .replace(Regex("[^A-Za-z0-9._-]"), "-")
+        val rows = rows(branch, planDate, items, now)
+
+        // Nothing changed since the last export (same count, same day)? Don't create another file.
+        val prefs = context.getSharedPreferences("export", Context.MODE_PRIVATE)
+        val fingerprint = rows.hashCode().toString()
+        val lastFile = prefs.getString("lastFile", null)?.let { File(dir, it) }
+        if (fingerprint == prefs.getString("lastFingerprint", null) && lastFile != null && lastFile.exists()) {
+            return Result(lastFile, prefs.getString("lastSaved", null), unchanged = true)
+        }
+
         val file = File(dir, "$name.xlsx")
-        write(file, rows(branch, planDate, items, now))
+        write(file, rows)
         val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
+        if (saved != null) {
+            prefs.edit().putString("lastFingerprint", fingerprint).putString("lastFile", file.name)
+                .putString("lastSaved", saved).apply()
+        }
         return Result(file, saved)
     }
 

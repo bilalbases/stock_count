@@ -134,7 +134,11 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             val result = withContext(Dispatchers.IO) { XlsxExport.export(context, branch.trim(), planDate.trim(), list) }
             snackbar.currentSnackbarData?.dismiss()
             val answer = snackbar.showSnackbar(
-                message = result.savedTo?.let { "Saved to $it" } ?: "Could not save to Downloads",
+                message = when {
+                    result.unchanged -> "No changes since last export · ${result.savedTo ?: result.file.name}"
+                    result.savedTo != null -> "Saved to ${result.savedTo}"
+                    else -> "Could not save to Downloads"
+                },
                 actionLabel = "Share",
                 withDismissAction = true,
                 duration = SnackbarDuration.Long
