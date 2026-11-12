@@ -40,6 +40,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.text.input.ImeAction
@@ -231,6 +233,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     val drafts = remember { mutableStateMapOf<Long, String>() }
     var deleting by remember { mutableStateOf<Item?>(null) }
     var editing by remember { mutableStateOf<Item?>(null) }
+    var typing by remember { mutableStateOf(false) }
+    var typedCode by remember { mutableStateOf("") }
+    val keyboardOpen = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
     val focusManager = LocalFocusManager.current
     var scanning by remember { mutableStateOf(false) }
     val pager = rememberPagerState(pageCount = { 2 })
@@ -424,7 +429,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             )
         },
         bottomBar = {
-            Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+            // While the keyboard is open the buttons are hidden, so the page has room above it.
+            if (!keyboardOpen) Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -439,6 +445,13 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                             val pending = drafts.size + (if (current != null) 1 else 0)
                             Text(if (pending == 0) "Save" else "Save ($pending)", fontWeight = FontWeight.SemiBold)
                         }
+                    )
+                    ExtendedFloatingActionButton(
+                        onClick = { typedCode = ""; typing = true },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        icon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        text = { Text("Lookup", fontWeight = FontWeight.SemiBold) }
                     )
                     ExtendedFloatingActionButton(
                         onClick = { scanning = true },
@@ -476,7 +489,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                     text = { Text("Counted (${counted.size})") }
                 )
             }
-            HorizontalPager(state = pager, modifier = Modifier.weight(1f)) { page ->
+            HorizontalPager(state = pager, modifier = Modifier.weight(1f).imePadding()) { page ->
                 if (page == 0) {
                     // ================= Count page: details, shelf and the item just scanned =================
                     LazyColumn(
@@ -680,6 +693,34 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
             }
         }
+    }
+
+    // Lookup: type a barcode by hand (damaged label, no scanner); works like a scan.
+    if (typing) {
+        val typeFocus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { runCatching { typeFocus.requestFocus() } }
+        fun go() {
+            val code = typedCode.trim()
+            if (code.isNotEmpty()) { typing = false; handleScan(code) }
+        }
+        AlertDialog(
+            onDismissRequest = { typing = false },
+            icon = { Icon(Icons.Filled.Search, null) },
+            title = { Text("Type barcode") },
+            text = {
+                OutlinedTextField(
+                    value = typedCode,
+                    onValueChange = { typedCode = it.filter { c -> !c.isWhitespace() } },
+                    label = { Text("Barcode") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { go() }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(typeFocus)
+                )
+            },
+            confirmButton = { Button(onClick = { go() }, enabled = typedCode.isNotBlank()) { Text("Look up") } },
+            dismissButton = { TextButton(onClick = { typing = false }) { Text("Cancel") } }
+        )
     }
 
     // Tapping a card on the Counted page opens all its fields for editing.
@@ -1082,6 +1123,7 @@ fun EditDialog(
 /** The item just scanned: big empty quantity box for the counter to fill in, then Save. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun CurrentItemCard(
     item: Item,
     alreadyCounted: Int?,
@@ -1094,6 +1136,13 @@ fun CurrentItemCard(
 ) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(item.barcode, item.shelf) { runCatching { focus.requestFocus() } }
+    // Keep the quantity box (and Save) visible above the keyboard.
+    val bringIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    var focused by remember { mutableStateOf(false) }
+    val imeBottom = androidx.compose.foundation.layout.WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)
+    LaunchedEffect(focused, imeBottom) {
+        if (focused) { kotlinx.coroutines.delay(120); bringIntoView.bringIntoView() }
+    }
 
     ElevatedCard(
         shape = MaterialTheme.shapes.large,
@@ -1133,8 +1182,12 @@ fun CurrentItemCard(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { onSave() }),
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
+                    .onFocusChanged { focused = it.isFocused }
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.bringIntoViewRequester(bringIntoView),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Checkbox(checked = zeroCount, onCheckedChange = onZeroCount)
                 Text("Zero count", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 TextButton(onClick = onCancel) { Text("Cancel") }
