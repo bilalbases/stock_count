@@ -35,7 +35,8 @@ A simple app for counting stock.
   - *Online, Google Sheet:* set up once with [google-sheet/Code.gs](google-sheet/Code.gs) (steps at the
     top of that file). On each PDT: ⋮ > Cloud upload settings (Web app URL, key, device name), then
     ⋮ > Upload to Google Sheet. Uploading again replaces that device's rows, so nothing is counted twice.
-    In the Sheet: menu Stock Count > Build PI sheet, then File > Download > Microsoft Excel.
+    In the Sheet: menu Stock Count > Build PI sheets (one tab per branch), then Save PI files
+    (one Excel per branch in the Drive folder "Stock Count PI").
   - *Offline:* collect the exported files on one device (WhatsApp, email, USB), then ⋮ > Merge export
     files and select them all. The merged file `PI_MERGED_...xlsx` is saved to Downloads/StockCount.
 - Works fully offline (only the optional Google Sheet upload needs internet). Everything is saved on the phone (Room database), and the

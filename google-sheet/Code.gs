@@ -12,14 +12,15 @@
  *     Copy the Web app URL (ends with /exec).
  *  4. In the app on each PDT: ⋮ > Cloud upload settings > paste the URL and the SECRET.
  *
- * At the end of the count: reload the Sheet, menu "Stock Count" > "Build PI sheet".
- * Then File > Download > Microsoft Excel (.xlsx) while the "PI" tab is open
- * (or delete the other tabs from the downloaded copy).
+ * At the end of the count: reload the Sheet, then menu "Stock Count":
+ *   1. "Build PI sheets"  -> one tab per branch ("PI 1090", "PI 1100", ...)
+ *   2. "Save PI files"    -> one Excel file per branch in the Drive folder "Stock Count PI",
+ *                            with download links. (Asks once for Drive permission.)
  */
 
 const SECRET = 'change-me';          // <-- change this, and enter the same value in the app
 const COUNTS = 'Counts';             // raw rows from all devices
-const PI = 'PI';                     // merged file in the PI template layout
+const PI = 'PI';                     // tab name prefix: one "PI <branch>" tab per branch
 
 const COUNT_HEADERS = ['DEVICE', 'UPLOADED_AT', 'PLAN_DATE', 'PLANT', 'STGE_LOC', 'SHELF',
   'MATERIAL', 'BARCODE', 'DESCRIPTION', 'STOCK_TYPE', 'ENTRY_QNT', 'ENTRY_UOM', 'ZERO_COUNT'];
@@ -66,52 +67,94 @@ function doGet() {
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Stock Count')
-    .addItem('Build PI sheet', 'buildPiSheet')
+    .addItem('Build PI sheets (one per branch)', 'buildPiSheet')
+    .addItem('Save PI files (one Excel per branch)', 'savePiFiles')
     .addItem('Clear all counts', 'clearCounts')
     .addToUi();
 }
 
-/** Merges all devices into the PI template: one row per plant + storage location + material + stock type + unit. */
+/** Merges all devices into the PI template, one tab per branch ("PI 1090", "PI 1100", ...):
+ *  one row per storage location + material + stock type + unit, quantities added together. */
 function buildPiSheet() {
   const ss = SpreadsheetApp.getActive();
   const sh = countsSheet();
   const last = sh.getLastRow();
   const data = last > 1 ? sh.getRange(2, 1, last - 1, COUNT_HEADERS.length).getDisplayValues() : [];
 
-  const groups = new Map();
-  let planDate = '';
+  const plants = new Map();   // plant -> { planDate, groups: Map }
   data.forEach(r => {
-    const [device, , plan, plant, sloc, , material, barcode, , stockType, qty, uom, zero] = r;
+    const [, , plan, plant, sloc, , material, barcode, , stockType, qty, uom, zero] = r;
     const mat = material || barcode;
-    const key = [plant, sloc, mat, stockType, uom].join('|');
-    const g = groups.get(key) || { plant, sloc, mat, stockType, uom, qty: 0, zero: false };
+    const p = plants.get(plant) || { planDate: '', groups: new Map() };
+    const key = [sloc, mat, stockType, uom].join('|');
+    const g = p.groups.get(key) || { sloc, mat, stockType, uom, qty: 0, zero: false };
     g.qty += Number(qty) || 0;
     g.zero = g.zero || zero === 'X';
-    groups.set(key, g);
-    if (!planDate && plan) planDate = plan;
+    p.groups.set(key, g);
+    if (!p.planDate && plan) p.planDate = plan;
+    plants.set(plant, p);
   });
 
-  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd.MM.yyyy');
-  const year = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy');
-  const out = [['DATE', 'PLAN_DATE', 'GJAHR', 'PLANT', 'STGE_LOC', 'ITEM', 'MATERIAL',
-    'STOCK_TYPE', 'ENTRY_QNT', 'ENTRY_UOM', 'ZERO_COUNT']];
-  let item = 0;
-  [...groups.values()]
-    .sort((a, b) => (a.plant + a.sloc + a.mat).localeCompare(b.plant + b.sloc + b.mat))
-    .forEach(g => out.push([today, planDate || today, year, g.plant, g.sloc, String(++item), g.mat,
-      g.stockType, String(g.qty), g.uom, (g.zero && g.qty === 0) ? 'X' : '']));
+  // Remove the PI tabs from the previous run
+  ss.getSheets().filter(t => t.getName() === PI || t.getName().startsWith(PI + ' ')).forEach(t => ss.deleteSheet(t));
 
-  let pi = ss.getSheetByName(PI);
-  if (pi) pi.clear(); else pi = ss.insertSheet(PI);
-  const range = pi.getRange(1, 1, out.length, out[0].length);
-  range.setNumberFormat('@');               // all text: barcodes/materials keep every digit
-  range.setValues(out);
-  pi.getRange(1, 1, 1, out[0].length).setFontWeight('bold');
-  pi.setFrozenRows(1);
-  pi.autoResizeColumns(1, out[0].length);
-  ss.setActiveSheet(pi);
-  SpreadsheetApp.getUi().alert(`PI sheet built: ${out.length - 1} rows from ${data.length} counted lines.\n\n` +
-    'Download it with File > Download > Microsoft Excel (.xlsx).');
+  const tz = Session.getScriptTimeZone();
+  const today = Utilities.formatDate(new Date(), tz, 'dd.MM.yyyy');
+  const year = Utilities.formatDate(new Date(), tz, 'yyyy');
+  const summary = [];
+  let first = null;
+  [...plants.keys()].sort().forEach(plant => {
+    const p = plants.get(plant);
+    const out = [['DATE', 'PLAN_DATE', 'GJAHR', 'PLANT', 'STGE_LOC', 'ITEM', 'MATERIAL',
+      'STOCK_TYPE', 'ENTRY_QNT', 'ENTRY_UOM', 'ZERO_COUNT']];
+    let item = 0;
+    [...p.groups.values()]
+      .sort((a, b) => (a.sloc + '|' + a.mat).localeCompare(b.sloc + '|' + b.mat))
+      .forEach(g => out.push([today, p.planDate || today, year, plant, g.sloc, String(++item), g.mat,
+        g.stockType, String(g.qty), g.uom, (g.zero && g.qty === 0) ? 'X' : '']));
+    const tab = ss.insertSheet(PI + ' ' + (plant || 'no branch'));
+    const range = tab.getRange(1, 1, out.length, out[0].length);
+    range.setNumberFormat('@');               // all text: materials keep every digit
+    range.setValues(out);
+    tab.getRange(1, 1, 1, out[0].length).setFontWeight('bold');
+    tab.setFrozenRows(1);
+    tab.autoResizeColumns(1, out[0].length);
+    summary.push(`${tab.getName()}: ${out.length - 1} rows`);
+    first = first || tab;
+  });
+  if (first) ss.setActiveSheet(first);
+  SpreadsheetApp.getUi().alert(plants.size
+    ? `Built one PI tab per branch from ${data.length} counted lines:\n\n${summary.join('\n')}\n\n` +
+      'Next: menu Stock Count > Save PI files (one Excel per branch).'
+    : 'No counts uploaded yet.');
+}
+
+/** Saves every "PI <branch>" tab as its own Excel file in the Drive folder "Stock Count PI". */
+function savePiFiles() {
+  const ss = SpreadsheetApp.getActive();
+  const tabs = ss.getSheets().filter(t => t.getName().startsWith(PI + ' '));
+  if (!tabs.length) { SpreadsheetApp.getUi().alert('Run Stock Count > Build PI sheets first.'); return; }
+  const folders = DriveApp.getFoldersByName('Stock Count PI');
+  const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder('Stock Count PI');
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmm');
+  const links = tabs.map(tab => {
+    const plant = tab.getName().substring(PI.length + 1);
+    const temp = SpreadsheetApp.create('PI_' + plant);
+    tab.copyTo(temp).setName('PI');
+    temp.deleteSheet(temp.getSheets()[0]);
+    SpreadsheetApp.flush();
+    const blob = UrlFetchApp.fetch(
+      'https://docs.google.com/spreadsheets/d/' + temp.getId() + '/export?format=xlsx',
+      { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } }
+    ).getBlob().setName(`PI_${plant}_${stamp}.xlsx`);
+    const file = folder.createFile(blob);
+    DriveApp.getFileById(temp.getId()).setTrashed(true);
+    return `<li><a href="https://drive.google.com/uc?export=download&id=${file.getId()}" target="_blank">${file.getName()}</a></li>`;
+  });
+  const html = HtmlService.createHtmlOutput(
+    `<p style="font-family:sans-serif">Saved ${links.length} file(s) to the Drive folder <b>Stock Count PI</b>. Click to download:</p>` +
+    `<ul style="font-family:sans-serif">${links.join('')}</ul>`).setWidth(460).setHeight(320);
+  SpreadsheetApp.getUi().showModalDialog(html, 'PI files per branch');
 }
 
 function clearCounts() {
