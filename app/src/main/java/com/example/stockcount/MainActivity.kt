@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -768,7 +769,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Version ${BuildConfig.VERSION_NAME}")
                     Text("Powered by GGHL")
-                    Text("Developed by Bilal")
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(R.drawable.developer_photo),
+                        contentDescription = "Bilal",
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        modifier = Modifier.padding(top = 6.dp).size(96.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .border(2.dp, Brand, androidx.compose.foundation.shape.CircleShape)
+                    )
+                    Text("Developed by Bilal", fontWeight = FontWeight.SemiBold)
                     Text("© $COPYRIGHT_YEARS Bilal. All rights reserved.")
                 }
             },
