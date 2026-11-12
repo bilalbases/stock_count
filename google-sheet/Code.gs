@@ -15,7 +15,7 @@
  * At the end of the count: reload the Sheet, then menu "Stock Count":
  *   1. "Build PI sheets"  -> one tab per branch ("PI 1090", "PI 1100", ...)
  *   2. "Save PI files"    -> one Excel file per branch in the Drive folder "Stock Count PI",
- *                            with download links. (Asks once for Drive permission.)
+ *                            named Stock_Count_<year>_<branch>.xlsx, with download links. (Asks once for Drive permission.)
  */
 
 const SECRET = 'change-me';          // <-- change this, and enter the same value in the app
@@ -136,7 +136,7 @@ function savePiFiles() {
   if (!tabs.length) { SpreadsheetApp.getUi().alert('Run Stock Count > Build PI sheets first.'); return; }
   const folders = DriveApp.getFoldersByName('Stock Count PI');
   const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder('Stock Count PI');
-  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HHmm');
+  const year = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy');
   const links = tabs.map(tab => {
     const plant = tab.getName().substring(PI.length + 1);
     const temp = SpreadsheetApp.create('PI_' + plant);
@@ -146,7 +146,10 @@ function savePiFiles() {
     const blob = UrlFetchApp.fetch(
       'https://docs.google.com/spreadsheets/d/' + temp.getId() + '/export?format=xlsx',
       { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } }
-    ).getBlob().setName(`PI_${plant}_${stamp}.xlsx`);
+    ).getBlob().setName(`Stock_Count_${year}_${plant}.xlsx`);   // e.g. Stock_Count_2026_1100.xlsx
+    // Saving again replaces the branch's previous file instead of adding a duplicate
+    const old = folder.getFilesByName(blob.getName());
+    while (old.hasNext()) old.next().setTrashed(true);
     const file = folder.createFile(blob);
     DriveApp.getFileById(temp.getId()).setTrashed(true);
     return `<li><a href="https://drive.google.com/uc?export=download&id=${file.getId()}" target="_blank">${file.getName()}</a></li>`;
