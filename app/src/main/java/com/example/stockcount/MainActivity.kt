@@ -229,6 +229,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     // Quantities typed on the cards but not saved yet (item id -> text).
     val drafts = remember { mutableStateMapOf<Long, String>() }
     var deleting by remember { mutableStateOf<Item?>(null) }
+    var editing by remember { mutableStateOf<Item?>(null) }
     val focusManager = LocalFocusManager.current
     var scanning by remember { mutableStateOf(false) }
     val pager = rememberPagerState(pageCount = { 2 })
@@ -670,12 +671,32 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                 scope.launch { dao.setZeroCount(item.id, checked) }
                             },
                             onDelete = { deleting = item },
-                            onDone = { saveAll() }
+                            onDone = { saveAll() },
+                            onOpen = { drafts.remove(item.id); editing = item }
                         )
                     }
                     }
                 }
             }
+        }
+    }
+
+    // Tapping a card on the Counted page opens all its fields for editing.
+    editing?.let { item ->
+        key(item.id) {
+            EditDialog(
+                item = item,
+                lookup = { materials.byBarcode(it) },
+                onDismiss = { editing = null },
+                onDelete = { editing = null; deleting = item },
+                onSave = { changed ->
+                    editing = null
+                    scope.launch {
+                        dao.save(changed.copy(zeroCount = if (changed.quantity > 0) false else changed.zeroCount))
+                        notify("✓ Saved ${changed.label()}  →  ${changed.quantity} ${changed.uom}")
+                    }
+                }
+            )
         }
     }
 
@@ -850,6 +871,7 @@ fun ItemCard(
     onZeroCount: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onDone: () -> Unit,
+    onOpen: () -> Unit,
 ) {
     ElevatedCard(
         shape = MaterialTheme.shapes.large,
@@ -857,7 +879,7 @@ fun ItemCard(
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
     ) {
         Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 6.dp)) {
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
                 Text(
                     item.label(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
