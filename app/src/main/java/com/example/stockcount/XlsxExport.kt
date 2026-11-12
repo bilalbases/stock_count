@@ -82,7 +82,7 @@ object XlsxExport {
      */
     fun merge(context: Context, uris: List<android.net.Uri>): MergeResult {
         class Group(val plant: String, val sloc: String, val material: String, val stockType: String, val uom: String) {
-            var qty = 0L; var zero = false
+            var qty = java.math.BigDecimal.ZERO; var zero = false
         }
         val groups = LinkedHashMap<String, Group>()
         var planDate = ""
@@ -103,7 +103,7 @@ object XlsxExport {
                 if (planDate.isEmpty()) planDate = c(iPlan)
                 val key = listOf(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)).joinToString("|")
                 val g = groups.getOrPut(key) { Group(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)) }
-                g.qty += c(iQty).toBigDecimalOrNull()?.toLong() ?: 0L
+                g.qty = g.qty.add(c(iQty).replace(',', '.').toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
                 g.zero = g.zero || c(iZero).equals("X", ignoreCase = true)
             }
         }
@@ -115,7 +115,8 @@ object XlsxExport {
             .mapIndexed { i, g ->
                 listOf(
                     today, planDate.ifBlank { today }, year, g.plant, g.sloc, (i + 1).toString(),
-                    g.material, g.stockType, g.qty.toString(), g.uom, if (g.zero && g.qty == 0L) "X" else ""
+                    g.material, g.stockType, g.qty.stripTrailingZeros().toPlainString(), g.uom,
+                    if (g.zero && g.qty.signum() == 0) "X" else ""
                 )
             }
         val plant = groups.values.firstOrNull()?.plant.orEmpty()
@@ -176,16 +177,32 @@ object XlsxExport {
         return "Downloads/$FOLDER/${file.name}"
     }
 
-    /** One row per item. Values that are whole numbers are written as numbers, like the template. */
+    /**
+     * PI rows in the SAP base unit: 3 OTR (1 OTR = 10 EA) is written as 30 EA. The same material
+     * counted on several shelves or in several units becomes one row with the quantities added.
+     */
     fun rows(branch: String, planDate: String, items: List<Item>, now: Date = Date()): List<List<String>> {
         val today = dateFormat().format(now)
         val plan = if (isValidDate(planDate)) planDate else today
         val year = Calendar.getInstance().apply { time = now }.get(Calendar.YEAR).toString()
-        return items.mapIndexed { i, item ->
+        class Row(val sloc: String, val material: String, val stockType: String, val uom: String) {
+            var qty = java.math.BigDecimal.ZERO; var zero = false
+        }
+        val groups = LinkedHashMap<String, Row>()
+        for (item in items) {
+            val mat = item.material.ifBlank { item.barcode }.ifBlank { item.name }
+            val uom = item.exportUom()
+            val r = groups.getOrPut(listOf(item.storageLoc, mat, item.stockType, uom).joinToString("|")) {
+                Row(item.storageLoc, mat, item.stockType, uom)
+            }
+            r.qty = r.qty.add(item.exportQty())
+            r.zero = r.zero || item.zeroCount
+        }
+        return groups.values.mapIndexed { i, r ->
+            val zero = r.zero && r.qty.signum() == 0
             listOf(
-                today, plan, year, branch, item.storageLoc, (i + 1).toString(),
-                item.material.ifBlank { item.barcode }.ifBlank { item.name }, item.stockType, item.quantity.toString(), item.uom,
-                if (item.zeroCount) "X" else ""
+                today, plan, year, branch, r.sloc, (i + 1).toString(),
+                r.material, r.stockType, r.qty.stripTrailingZeros().toPlainString(), r.uom, if (zero) "X" else ""
             )
         }
     }

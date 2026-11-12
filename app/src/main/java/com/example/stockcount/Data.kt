@@ -2,6 +2,9 @@ package com.example.stockcount
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import java.math.BigDecimal
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "items", indices = [Index(value = ["barcode", "shelf"])])
@@ -21,7 +24,24 @@ data class Item(
     val storageLoc: String = "",
     /** Checked = counted and confirmed there are none (not just "not counted yet"). */
     val zeroCount: Boolean = false,
+    /** SAP base unit (e.g. EA) from the material list; blank = uom is already the base unit. */
+    @ColumnInfo(defaultValue = "''") val baseUom: String = "",
+    /** How many base units one [uom] holds (e.g. 1 OTR = 10 EA). */
+    @ColumnInfo(defaultValue = "1") val factor: Double = 1.0,
 ) {
+    /** Unit written to the export: always the base unit when it is known. */
+    fun exportUom(): String = baseUom.ifBlank { uom }
+
+    /** Quantity in the base unit, e.g. 3 OTR x 10 = 30 EA. */
+    fun exportQty(): BigDecimal =
+        if (baseUom.isBlank() || factor == 1.0) BigDecimal(quantity)
+        else BigDecimal(quantity).multiply(BigDecimal.valueOf(factor)).stripTrailingZeros()
+
+    /** "1 OTR = 10 EA" when the counted unit is not the base unit, else empty. */
+    fun unitHint(): String =
+        if (baseUom.isBlank() || baseUom.equals(uom, true)) ""
+        else "1 $uom = ${BigDecimal.valueOf(factor).stripTrailingZeros().toPlainString()} $baseUom"
+
     /** What to show in the list: description if there is one, else material, else barcode. */
     fun label() = name.ifBlank { material }.ifBlank { barcode }
 }
@@ -64,6 +84,10 @@ data class Material(
     val material: String,
     val uom: String,
     val description: String = "",
+    /** SAP base unit (MARA-MEINS), e.g. EA. Blank in old lists = uom is the base unit. */
+    @ColumnInfo(defaultValue = "''") val baseUom: String = "",
+    /** Base units per [uom] (MARM UMREZ / UMREN), e.g. 10 for OTR. */
+    @ColumnInfo(defaultValue = "1") val factor: Double = 1.0,
 )
 
 @Dao
@@ -88,15 +112,26 @@ abstract class MaterialDao {
     }
 }
 
-@Database(entities = [Item::class, Material::class], version = 4, exportSchema = false)
+@Database(entities = [Item::class, Material::class], version = 5, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun items(): ItemDao
     abstract fun materials(): MaterialDao
 
     companion object {
         @Volatile private var instance: AppDb? = null
+
+        /** Adds base unit + conversion factor, keeping the counts and the material list. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (t in listOf("items", "materials")) {
+                    db.execSQL("ALTER TABLE $t ADD COLUMN baseUom TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE $t ADD COLUMN factor REAL NOT NULL DEFAULT 1")
+                }
+            }
+        }
         fun get(context: Context): AppDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDb::class.java, "stock.db")
+                .addMigrations(MIGRATION_4_5)
                 .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }

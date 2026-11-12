@@ -43,7 +43,9 @@ object MaterialImport {
         }
         var mat = find("MATERIAL", "MATNR", "ITEM CODE", not = "DESC")
         var bar = find("BARCODE", "EAN", "GTIN", "UPC")
-        var uom = find("UOM", "UNIT", "MEINS")
+        var uom = find("UOM", "UNIT", "MEINH", not = "BASE")
+        val base = header.indexOfFirst { it.replace('_', ' ') in setOf("BASE UOM", "BASE UNIT", "BUN", "MEINS") }
+        val fac = header.indexOfFirst { it.contains("FACTOR") || it.contains("CONVERSION") || it == "UMREZ" }
         var desc = find("DESC", "NAME", "MAKTX")
         val hasHeader = mat >= 0 && bar >= 0
         if (!hasHeader) { mat = 0; bar = 1; uom = 2; desc = 3 }
@@ -54,7 +56,11 @@ object MaterialImport {
             fun col(i: Int) = row.getOrNull(i)?.trim().orEmpty()
             val m = col(mat); val b = col(bar)
             if (m.isEmpty() || b.isEmpty()) { skipped++; continue }
-            out[b] = Material(barcode = b, material = m, uom = col(uom).uppercase().ifEmpty { "EA" }, description = col(desc))
+            val unit = col(uom).uppercase().ifEmpty { "EA" }
+            val baseUnit = if (hasHeader && base >= 0) col(base).uppercase() else ""
+            val factor = if (hasHeader && fac >= 0) col(fac).replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 } ?: 1.0 else 1.0
+            out[b] = Material(barcode = b, material = m, uom = unit, description = col(desc),
+                baseUom = baseUnit, factor = if (baseUnit.isBlank() || baseUnit == unit) 1.0 else factor)
         }
         return Result(out.values.toList(), skipped)
     }

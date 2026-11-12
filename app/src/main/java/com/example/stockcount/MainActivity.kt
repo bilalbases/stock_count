@@ -301,6 +301,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 // Show it on the Count page with an empty quantity box for the counter to fill in.
                 current = existing?.copy() ?: Item(
                     name = m!!.description, barcode = code, material = m.material, uom = m.uom,
+                    baseUom = m.baseUom, factor = m.factor,
                     shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 0
                 )
                 currentExisting = existing
@@ -871,6 +872,7 @@ fun ItemCard(
                 Spacer(Modifier.height(6.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Tag(item.uom, strong = true)
+                    if (item.unitHint().isNotEmpty()) Tag(item.unitHint())
                     if (item.shelf.isNotEmpty()) Tag("Shelf ${item.shelf}")
                     if (item.storageLoc.isNotEmpty()) Tag("SLoc ${item.storageLoc}")
                     if (item.stockType.isNotEmpty()) Tag("Type ${item.stockType}")
@@ -958,6 +960,8 @@ fun EditDialog(
     var material by remember { mutableStateOf(item.material) }
     var shelf by remember { mutableStateOf(item.shelf) }
     var uom by remember { mutableStateOf(item.uom) }
+    var baseUom by remember { mutableStateOf(item.baseUom) }
+    var factor by remember { mutableStateOf(item.factor) }
     var stockType by remember { mutableStateOf(item.stockType) }
     var storageLoc by remember { mutableStateOf(item.storageLoc) }
     var qty by remember { mutableStateOf(if (notFoundCode != null) "" else item.quantity.toString()) }
@@ -995,6 +999,8 @@ fun EditDialog(
                                 if (m != null) {
                                     material = m.material
                                     uom = m.uom
+                                    baseUom = m.baseUom
+                                    factor = m.factor
                                     if (m.description.isNotBlank()) name = m.description
                                     lookupMsg = "✓ Found: ${m.material}"
                                 } else {
@@ -1034,7 +1040,7 @@ fun EditDialog(
             TextButton(
                 enabled = (material.isNotBlank() || name.isNotBlank()) && (qty.isNotEmpty() || zeroCount),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, baseUom = baseUom, factor = if (uom.trim().equals(baseUom, true)) 1.0 else factor, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },
@@ -1075,6 +1081,7 @@ fun CurrentItemCard(
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Tag(item.uom, strong = true)
+                if (item.unitHint().isNotEmpty()) Tag(item.unitHint())
                 if (item.shelf.isNotEmpty()) Tag("Shelf ${item.shelf}")
                 if (item.storageLoc.isNotEmpty()) Tag("SLoc ${item.storageLoc}")
                 if (item.stockType.isNotEmpty()) Tag("Type ${item.stockType}")

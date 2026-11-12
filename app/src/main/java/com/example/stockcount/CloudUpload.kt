@@ -48,8 +48,10 @@ object CloudUpload {
                 put("barcode", i.barcode)
                 put("description", i.name)
                 put("stockType", i.stockType)
-                put("quantity", i.quantity)
-                put("uom", i.uom)
+                put("quantity", i.exportQty().toPlainString())   // in the base unit (3 OTR -> 30 EA)
+                put("uom", i.exportUom())
+                put("countedQty", i.quantity)
+                put("countedUom", i.uom)
                 put("zeroCount", i.zeroCount)
             })
         }

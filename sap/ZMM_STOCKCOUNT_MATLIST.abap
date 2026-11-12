@@ -3,7 +3,10 @@
 *&---------------------------------------------------------------------*
 *& Downloads the article list of one branch for the Stock Count app as
 *& an Excel file (.xlsx) with columns:
-*&   MATERIAL | BARCODE | UOM | DESCRIPTION
+*&   MATERIAL | BARCODE | UOM | BASE_UOM | FACTOR | DESCRIPTION
+*& UOM is the unit of the barcode (e.g. OTR), BASE_UOM the article's base
+*& unit (MARA-MEINS, e.g. EA) and FACTOR how many base units one UOM holds
+*& (MARM-UMREZ / UMREN, e.g. 10). The app converts counts to the base unit.
 *& All columns are stored as text, so barcodes keep every digit
 *& (no 1E+12 format). One row per barcode: an article with an EA and a
 *& CAR barcode gives two rows. Upload the file in the app with
@@ -31,6 +34,8 @@ TYPES: BEGIN OF ty_out,                      " string columns = text cells in Ex
          material    TYPE string,
          barcode     TYPE string,
          uom         TYPE string,
+         base_uom    TYPE string,
+         factor      TYPE string,
          description TYPE string,
        END OF ty_out,
        BEGIN OF ty_row,
@@ -94,22 +99,36 @@ START-OF-SELECTION.
 FORM select_data.
   TYPES: BEGIN OF ty_mat,
            matnr TYPE mara-matnr,
+           meins TYPE mara-meins,
            mstae TYPE mara-mstae,
            mmsta TYPE marc-mmsta,
-         END OF ty_mat.
+         END OF ty_mat,
+         BEGIN OF ty_conv,
+           matnr TYPE marm-matnr,
+           meinh TYPE marm-meinh,
+           umrez TYPE marm-umrez,
+           umren TYPE marm-umren,
+         END OF ty_conv.
   DATA: lt_mat  TYPE STANDARD TABLE OF ty_mat,
         lt_bc   TYPE STANDARD TABLE OF ty_row,
         lt_marm TYPE STANDARD TABLE OF ty_row,
         lt_makt TYPE HASHED TABLE OF makt WITH UNIQUE KEY matnr spras,
         ls_makt TYPE makt,
         ls_out  TYPE ty_out,
+        lt_conv TYPE SORTED TABLE OF ty_conv WITH UNIQUE KEY matnr meinh,
+        ls_conv TYPE ty_conv,
+        lt_matk TYPE SORTED TABLE OF ty_mat WITH NON-UNIQUE KEY matnr,
+        ls_mat  TYPE ty_mat,
+        lv_fact TYPE p LENGTH 15 DECIMALS 6,
+        lv_fstr TYPE string,
         lv_mat  TYPE char40,
-        lv_uom  TYPE char3.
+        lv_uom  TYPE char3,
+        lv_base TYPE char3.
   FIELD-SYMBOLS: <m> TYPE ty_mat,
                  <r> TYPE ty_row.
 
   " 1. Articles of the branch, without deletion flags
-  SELECT a~matnr a~mstae c~mmsta
+  SELECT a~matnr a~meins a~mstae c~mmsta
     FROM mara AS a
     INNER JOIN marc AS c ON c~matnr = a~matnr
     INTO CORRESPONDING FIELDS OF TABLE lt_mat
@@ -147,6 +166,13 @@ FORM select_data.
   DELETE ADJACENT DUPLICATES FROM lt_bc COMPARING ean11.   " one row per barcode
   SORT lt_bc BY matnr meinh ean11.
 
+  " 3b. Unit conversions: 1 <meinh> = umrez / umren base units
+  SELECT matnr meinh umrez umren FROM marm
+    INTO CORRESPONDING FIELDS OF TABLE lt_conv
+    FOR ALL ENTRIES IN lt_mat
+    WHERE matnr = lt_mat-matnr.
+  lt_matk = lt_mat.
+
   " 4. Descriptions
   SELECT * FROM makt
     INTO TABLE lt_makt
@@ -172,6 +198,31 @@ FORM select_data.
     ls_out-material = condense( val = lv_mat ).
     ls_out-barcode  = condense( val = <r>-ean11 ).
     ls_out-uom      = condense( val = lv_uom ).
+
+    " Base unit and conversion factor
+    CLEAR: ls_mat, ls_conv, lv_base.
+    READ TABLE lt_matk INTO ls_mat WITH KEY matnr = <r>-matnr.
+    CALL FUNCTION 'CONVERSION_EXIT_CUNIT_OUTPUT'
+      EXPORTING  input          = ls_mat-meins
+                 language       = sy-langu
+      IMPORTING  output         = lv_base
+      EXCEPTIONS unit_not_found = 1
+                 OTHERS         = 2.
+    IF sy-subrc <> 0.
+      lv_base = ls_mat-meins.
+    ENDIF.
+    ls_out-base_uom = condense( val = lv_base ).
+    READ TABLE lt_conv INTO ls_conv WITH TABLE KEY matnr = <r>-matnr meinh = <r>-meinh.
+    IF sy-subrc = 0 AND ls_conv-umren <> 0.
+      lv_fact = ls_conv-umrez / ls_conv-umren.
+    ELSE.
+      lv_fact = 1.
+    ENDIF.
+    lv_fstr = |{ lv_fact DECIMALS = 6 }|.
+    IF lv_fstr CS '.'.          " 10.000000 -> 10, 0.500000 -> 0.5
+      lv_fstr = replace( val = lv_fstr regex = '\.?0+$' with = '' ).
+    ENDIF.
+    ls_out-factor = condense( val = lv_fstr ).
     READ TABLE lt_makt INTO ls_makt WITH TABLE KEY matnr = <r>-matnr spras = sy-langu.
     IF sy-subrc = 0.
       ls_out-description = ls_makt-maktx.
@@ -200,6 +251,8 @@ FORM show_alv.
       PERFORM set_header USING lo_cols 'MATERIAL'.
       PERFORM set_header USING lo_cols 'BARCODE'.
       PERFORM set_header USING lo_cols 'UOM'.
+      PERFORM set_header USING lo_cols 'BASE_UOM'.
+      PERFORM set_header USING lo_cols 'FACTOR'.
       PERFORM set_header USING lo_cols 'DESCRIPTION'.
       lo_salv->display( ).
     CATCH cx_root INTO lx_err.
@@ -221,6 +274,8 @@ FORM build_xlsx.
       PERFORM set_header USING lo_cols 'MATERIAL'.
       PERFORM set_header USING lo_cols 'BARCODE'.
       PERFORM set_header USING lo_cols 'UOM'.
+      PERFORM set_header USING lo_cols 'BASE_UOM'.
+      PERFORM set_header USING lo_cols 'FACTOR'.
       PERFORM set_header USING lo_cols 'DESCRIPTION'.
       gv_xlsx = lo_salv->to_xml( xml_type = if_salv_bs_xml=>c_type_xlsx ).
     CATCH cx_root INTO lx_err.

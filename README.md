@@ -7,6 +7,9 @@ A simple app for counting stock.
 - **Upload materials** (under the header, or ⋮ > Import material list): pick an Excel (.xlsx) or CSV
   file with columns MATERIAL, BARCODE, UOM (optional DESCRIPTION). Header names are matched loosely
   (EAN, UNIT, MEINS, MAKTX also work); without a header, columns A-D are read in that order.
+  Optional columns BASE_UOM and FACTOR (from the SAP report ZMM_STOCKCOUNT_MATLIST) give the
+  base unit and how many base units one UOM holds (1 OTR = 10 EA). Counts are then exported in the
+  base unit: 3 OTR is written as 30 EA, and the same material counted in several units becomes one row.
   Importing replaces the previous list. A material can appear on several rows with different barcodes
   (e.g. one for EA, one for CAR).
 - **Zebra devices:** the hardware scanner (trigger buttons) works too. On first start the app creates a
