@@ -1121,9 +1121,8 @@ fun EditDialog(
 }
 
 /** The item just scanned: big empty quantity box for the counter to fill in, then Save. */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun CurrentItemCard(
     item: Item,
     alreadyCounted: Int?,
