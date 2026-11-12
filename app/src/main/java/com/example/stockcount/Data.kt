@@ -15,7 +15,8 @@ data class Item(
     /** Material number (from the imported material list, or typed in). */
     val material: String = "",
     val shelf: String = "",
-    val quantity: Int = 0,
+    /** Counted quantity in [uom]; decimals allowed (e.g. 1.25 KG for butchery and fresh). */
+    val quantity: Double = 0.0,
     /** Unit of measure for ENTRY_UOM, e.g. EA or CAR. */
     val uom: String = "EA",
     /** STOCK_TYPE in the export (blank = unrestricted). */
@@ -34,8 +35,8 @@ data class Item(
 
     /** Quantity in the base unit, e.g. 3 OTR x 10 = 30 EA. */
     fun exportQty(): BigDecimal =
-        if (baseUom.isBlank() || factor == 1.0) BigDecimal(quantity)
-        else BigDecimal(quantity).multiply(BigDecimal.valueOf(factor)).stripTrailingZeros()
+        if (baseUom.isBlank() || factor == 1.0) BigDecimal.valueOf(quantity).stripTrailingZeros()
+        else BigDecimal.valueOf(quantity).multiply(BigDecimal.valueOf(factor)).stripTrailingZeros()
 
     /** "1 OTR = 10 EA" when the counted unit is not the base unit, else empty. */
     fun unitHint(): String =
@@ -112,13 +113,24 @@ abstract class MaterialDao {
     }
 }
 
-@Database(entities = [Item::class, Material::class], version = 5, exportSchema = false)
+@Database(entities = [Item::class, Material::class], version = 6, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun items(): ItemDao
     abstract fun materials(): MaterialDao
 
     companion object {
         @Volatile private var instance: AppDb? = null
+
+        /** Quantity becomes a decimal (REAL); counts are copied over unchanged. */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `items_new` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `barcode` TEXT NOT NULL, `material` TEXT NOT NULL, `shelf` TEXT NOT NULL, `quantity` REAL NOT NULL, `uom` TEXT NOT NULL, `stockType` TEXT NOT NULL, `storageLoc` TEXT NOT NULL, `zeroCount` INTEGER NOT NULL, `baseUom` TEXT NOT NULL DEFAULT '', `factor` REAL NOT NULL DEFAULT 1)")
+                db.execSQL("INSERT INTO items_new (id, name, barcode, material, shelf, quantity, uom, stockType, storageLoc, zeroCount, baseUom, factor) SELECT id, name, barcode, material, shelf, quantity, uom, stockType, storageLoc, zeroCount, baseUom, factor FROM items")
+                db.execSQL("DROP TABLE items")
+                db.execSQL("ALTER TABLE items_new RENAME TO items")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_items_barcode_shelf` ON `items` (`barcode`, `shelf`)")
+            }
+        }
 
         /** Adds base unit + conversion factor, keeping the counts and the material list. */
         private val MIGRATION_4_5 = object : Migration(4, 5) {
@@ -131,7 +143,7 @@ abstract class AppDb : RoomDatabase() {
         }
         fun get(context: Context): AppDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDb::class.java, "stock.db")
-                .addMigrations(MIGRATION_4_5)
+                .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }
@@ -162,3 +174,20 @@ class Settings(context: Context) {
         get() = prefs.getString("theme", "system") ?: "system"
         set(v) = prefs.edit().putString("theme", v).apply()
 }
+
+/** 1.0 -> "1", 1.250 -> "1.25" */
+fun fmtQty(q: Double): String = BigDecimal.valueOf(q).stripTrailingZeros().toPlainString().let { if (it == "0.0") "0" else it }
+
+/** Typed text -> number; accepts "1.5" and "1,5". */
+fun parseQty(s: String): Double? = s.trim().replace(',', '.').toDoubleOrNull()
+
+/** Keeps digits and one decimal point (comma becomes point), max 3 decimals. */
+fun cleanQty(s: String): String {
+    val t = s.replace(',', '.').filter { it.isDigit() || it == '.' }
+    val i = t.indexOf('.')
+    val clean = if (i < 0) t else t.substring(0, i + 1) + t.substring(i + 1).replace(".", "").take(3)
+    return clean.take(10)
+}
+
+/** a + b without floating-point noise (0.1 + 0.2 = 0.3). */
+fun addQty(a: Double, b: Double): Double = BigDecimal.valueOf(a).add(BigDecimal.valueOf(b)).toDouble()

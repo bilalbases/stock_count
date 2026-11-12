@@ -250,23 +250,23 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     /** Saves the scanned item with the typed quantity. Returns false if no quantity was entered. */
     fun saveCurrent(): Boolean {
         val item = current ?: return true
-        val q = currentQty.toIntOrNull()
+        val q = parseQty(currentQty)
         if (q == null && !currentZero) {
             notify("Enter the quantity for ${item.label()}")
             return false
         }
-        val qty = q ?: 0
-        val zero = currentZero && qty == 0
+        val qty = q ?: 0.0
+        val zero = currentZero && qty == 0.0
         val existing = currentExisting
         current = null; currentQty = ""; currentZero = false; currentExisting = null
         scope.launch {
             if (existing != null) {
-                val total = existing.quantity + qty
-                dao.save(existing.copy(quantity = total, zeroCount = zero && total == 0))
-                notify("✓ ${item.label()}  +$qty  →  $total ${item.uom}")
+                val total = addQty(existing.quantity, qty)
+                dao.save(existing.copy(quantity = total, zeroCount = zero && total == 0.0))
+                notify("✓ ${item.label()}  +${fmtQty(qty)}  →  ${fmtQty(total)} ${item.uom}")
             } else {
                 dao.save(item.copy(quantity = qty, zeroCount = zero))
-                notify("✓ Saved ${item.label()}  →  $qty ${item.uom}")
+                notify("✓ Saved ${item.label()}  →  ${fmtQty(qty)} ${item.uom}")
             }
         }
         return true
@@ -282,7 +282,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             var changed = 0
             for ((id, text) in drafts.toMap()) {
                 val item = current[id] ?: continue
-                val q = text.toIntOrNull() ?: continue
+                val q = parseQty(text) ?: continue
                 if (q != item.quantity) {
                     dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)); changed++
                 }
@@ -309,7 +309,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 current = existing?.copy() ?: Item(
                     name = m!!.description, barcode = code, material = m.material, uom = m.uom,
                     baseUom = m.baseUom, factor = m.factor,
-                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 0
+                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 0.0
                 )
                 currentExisting = existing
                 currentQty = ""
@@ -476,7 +476,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 it.material.contains(search, true) || it.shelf.contains(search, true)
         }
         Column(Modifier.padding(padding).fillMaxSize()) {
-            val counted = items.sortedBy { it.id }   // in the order they were counted
+            val counted = items.sortedByDescending { it.id }   // newest first
             TabRow(selectedTabIndex = pager.currentPage) {
                 Tab(
                     selected = pager.currentPage == 0,
@@ -618,9 +618,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                             } else {
                                 CurrentItemCard(
                                     item = item,
-                                    alreadyCounted = currentExisting?.quantity,
+                                    alreadyCounted = currentExisting?.quantity?.let(::fmtQty),
                                     qty = currentQty,
-                                    onQtyChange = { currentQty = it.filter(Char::isDigit).take(7); if (currentQty.isNotEmpty() && currentQty != "0") currentZero = false },
+                                    onQtyChange = { currentQty = cleanQty(it); if ((parseQty(currentQty) ?: 0.0) > 0.0) currentZero = false },
                                     zeroCount = currentZero,
                                     onZeroCount = { currentZero = it; if (it) currentQty = "0" },
                                     onSave = { if (saveCurrent()) focusManager.clearFocus() },
@@ -659,7 +659,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                     item {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             StatTile("Items", shown.size.toString(), Modifier.weight(1f))
-                            StatTile("Units", shown.sumOf { it.quantity }.toString(), Modifier.weight(1f))
+                            StatTile("Units", fmtQty(shown.fold(0.0) { acc, i -> addQty(acc, i.quantity) }), Modifier.weight(1f))
                             StatTile("Zero count", shown.count { it.zeroCount }.toString(), Modifier.weight(1f))
                         }
                     }
@@ -669,15 +669,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         }
                     items(shown, key = { it.id }) { item ->
                         fun step(delta: Int) {
-                            val base = drafts[item.id]?.toIntOrNull() ?: item.quantity
+                            val base = drafts[item.id]?.let(::parseQty) ?: item.quantity
                             drafts.remove(item.id)
-                            val q = (base + delta).coerceAtLeast(0)
-                            scope.launch { dao.save(item.copy(quantity = q, zeroCount = if (q > 0) false else item.zeroCount)) }
+                            val q = addQty(base, delta.toDouble()).coerceAtLeast(0.0)
+                            scope.launch { dao.save(item.copy(quantity = q, zeroCount = if (q > 0.0) false else item.zeroCount)) }
                         }
                         ItemCard(
                             item = item,
-                            qtyText = drafts[item.id] ?: item.quantity.toString(),
-                            onQtyChange = { drafts[item.id] = it.filter(Char::isDigit).take(7) },
+                            qtyText = drafts[item.id] ?: fmtQty(item.quantity),
+                            onQtyChange = { drafts[item.id] = cleanQty(it) },
                             onMinus = { step(-1) },
                             onPlus = { step(1) },
                             onZeroCount = { checked ->
@@ -734,8 +734,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 onSave = { changed ->
                     editing = null
                     scope.launch {
-                        dao.save(changed.copy(zeroCount = if (changed.quantity > 0) false else changed.zeroCount))
-                        notify("✓ Saved ${changed.label()}  →  ${changed.quantity} ${changed.uom}")
+                        dao.save(changed.copy(zeroCount = if (changed.quantity > 0.0) false else changed.zeroCount))
+                        notify("✓ Saved ${changed.label()}  →  ${fmtQty(changed.quantity)} ${changed.uom}")
                     }
                 }
             )
@@ -747,7 +747,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             EditDialog(
                 item = Item(
                     name = "", barcode = code, shelf = shelf.trim(), stockType = stockType.trim(),
-                    storageLoc = storageLoc.trim(), quantity = 0
+                    storageLoc = storageLoc.trim(), quantity = 0.0
                 ),
                 notFoundCode = code,
                 lookup = { materials.byBarcode(it) },
@@ -759,12 +759,12 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         // If this barcode is already counted on this shelf, add to it instead of making a duplicate.
                         val existing = newItem.barcode.takeIf { it.isNotEmpty() }?.let { dao.byBarcode(it, newItem.shelf) }
                         if (existing != null) {
-                            val q = existing.quantity + newItem.quantity
-                            dao.save(existing.copy(quantity = q, zeroCount = if (q > 0) false else existing.zeroCount))
-                            notify("✓ ${existing.label()}  →  $q ${existing.uom}")
+                            val q = addQty(existing.quantity, newItem.quantity)
+                            dao.save(existing.copy(quantity = q, zeroCount = if (q > 0.0) false else existing.zeroCount))
+                            notify("✓ ${existing.label()}  →  ${fmtQty(q)} ${existing.uom}")
                         } else {
                             dao.save(newItem)
-                            notify("✓ Added ${newItem.label()}  →  ${newItem.quantity} ${newItem.uom}")
+                            notify("✓ Added ${newItem.label()}  →  ${fmtQty(newItem.quantity)} ${newItem.uom}")
                         }
                     }
                 }
@@ -845,7 +845,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             onDismissRequest = { deleting = null },
             icon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("Delete item?") },
-            text = { Text("${item.label()} (${item.quantity} ${item.uom}) will be removed from this count.") },
+            text = { Text("${item.label()} (${fmtQty(item.quantity)} ${item.uom}) will be removed from this count.") },
             confirmButton = {
                 TextButton(onClick = { drafts.remove(item.id); scope.launch { dao.delete(item) }; deleting = null }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
@@ -955,7 +955,7 @@ fun ItemCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StepButton("−", onMinus)
                 // Tap the number to type a quantity; press Save (or Done on the keyboard) to keep it.
-                val edited = qtyText != item.quantity.toString()
+                val edited = qtyText != fmtQty(item.quantity)
                 BasicTextField(
                     value = qtyText,
                     onValueChange = onQtyChange,
@@ -971,7 +971,7 @@ fun ItemCard(
                         }
                     ),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { onDone() }),
                     modifier = Modifier.width(64.dp).padding(horizontal = 4.dp)
                 )
@@ -1036,7 +1036,7 @@ fun EditDialog(
     var factor by remember { mutableStateOf(item.factor) }
     var stockType by remember { mutableStateOf(item.stockType) }
     var storageLoc by remember { mutableStateOf(item.storageLoc) }
-    var qty by remember { mutableStateOf(if (notFoundCode != null) "" else item.quantity.toString()) }
+    var qty by remember { mutableStateOf(if (notFoundCode != null) "" else fmtQty(item.quantity)) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -1094,8 +1094,8 @@ fun EditDialog(
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
                 OutlinedTextField(
-                    qty, { qty = it.filter(Char::isDigit); if ((qty.toIntOrNull() ?: 0) > 0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    qty, { qty = cleanQty(it); if ((parseQty(qty) ?: 0.0) > 0.0) zeroCount = false }, label = { Text("Quantity") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
@@ -1112,7 +1112,7 @@ fun EditDialog(
             TextButton(
                 enabled = (material.isNotBlank() || name.isNotBlank()) && (qty.isNotEmpty() || zeroCount),
                 onClick = {
-                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, baseUom = baseUom, factor = if (uom.trim().equals(baseUom, true)) 1.0 else factor, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = qty.toIntOrNull() ?: 0, zeroCount = zeroCount))
+                    onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, baseUom = baseUom, factor = if (uom.trim().equals(baseUom, true)) 1.0 else factor, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = parseQty(qty) ?: 0.0, zeroCount = zeroCount))
                 }
             ) { Text("Save") }
         },
@@ -1125,7 +1125,7 @@ fun EditDialog(
 @Composable
 fun CurrentItemCard(
     item: Item,
-    alreadyCounted: Int?,
+    alreadyCounted: String?,
     qty: String,
     onQtyChange: (String) -> Unit,
     zeroCount: Boolean,
@@ -1178,7 +1178,7 @@ fun CurrentItemCard(
                 label = { Text("Quantity (${item.uom})") },
                 singleLine = true,
                 textStyle = LocalTextStyle.current.copy(fontSize = 28.sp, fontWeight = FontWeight.Bold),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { onSave() }),
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
                     .onFocusChanged { focused = it.isFocused }
