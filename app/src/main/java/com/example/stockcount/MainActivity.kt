@@ -1080,13 +1080,26 @@ fun EditDialog(
                                 }
                             }
                         }) { Text("Look up") }
-                        Spacer(Modifier.width(12.dp))
-                        lookupMsg?.let {
-                            Text(
-                                it, style = MaterialTheme.typography.bodyMedium,
-                                color = if (it.startsWith("✓")) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
-                            )
+                        if (onDelete != null) {
+                            Spacer(Modifier.width(10.dp))
+                            Button(
+                                onClick = { if (confirmDelete) onDelete() else confirmDelete = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                )
+                            ) {
+                                Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (confirmDelete) "Tap again" else "Delete")
+                            }
                         }
+                    }
+                    lookupMsg?.let {
+                        Text(
+                            it, style = MaterialTheme.typography.bodyMedium,
+                            color = if (it.startsWith("✓")) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error
+                        )
                     }
                 }
                 // Order: quantity, unit, then shelf / storage location / stock type, then zero count.
@@ -1102,7 +1115,7 @@ fun EditDialog(
                     Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
                     Text("Zero count")
                 }
-                if (onDelete != null) {
+                if (onDelete != null && lookup == null) {
                     TextButton(onClick = { if (confirmDelete) onDelete() else confirmDelete = true }) {
                         Text(if (confirmDelete) "Tap again to delete" else "Delete item", color = MaterialTheme.colorScheme.error)
                     }
