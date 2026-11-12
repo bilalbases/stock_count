@@ -928,92 +928,92 @@ fun ItemCard(
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
     ) {
-        Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 6.dp)) {
+        // Compact tile: name + codes on the left, quantity with its unit underneath on the right.
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 30.dp) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
                 Text(
-                    item.label(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                    item.label(), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 18.sp
                 )
                 val sub = listOfNotNull(
                     item.material.takeIf { it.isNotEmpty() && item.name.isNotEmpty() },
-                    item.barcode.takeIf { it.isNotEmpty() }
+                    item.barcode.takeIf { it.isNotEmpty() },
+                    item.unitHint().takeIf { it.isNotEmpty() }
                 ).joinToString("  ·  ")
                 if (sub.isNotEmpty()) {
-                    Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Tag(item.uom, strong = true)
-                    if (item.unitHint().isNotEmpty()) Tag(item.unitHint())
-                    if (item.shelf.isNotEmpty()) Tag("Shelf ${item.shelf}")
-                    if (item.storageLoc.isNotEmpty()) Tag("SLoc ${item.storageLoc}")
-                    if (item.stockType.isNotEmpty()) Tag("Type ${item.stockType}")
+                    Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Spacer(Modifier.width(8.dp))
-            // Stepper
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StepButton("−", onMinus)
-                // Tap the number to type a quantity; press Save (or Done on the keyboard) to keep it.
-                val edited = qtyText != fmtQty(item.quantity)
-                BasicTextField(
-                    value = qtyText,
-                    onValueChange = onQtyChange,
-                    singleLine = true,
-                    textStyle = LocalTextStyle.current.copy(
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        color = when {
-                            edited -> MaterialTheme.colorScheme.secondary
-                            item.zeroCount -> MaterialTheme.colorScheme.onSurfaceVariant
-                            else -> MaterialTheme.colorScheme.onSurface
-                        }
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onDone() }),
-                    modifier = Modifier.width(64.dp).padding(horizontal = 4.dp)
-                )
-                StepButton("+", onPlus, primary = true)
+            Spacer(Modifier.width(6.dp))
+            // Stepper with the unit under the quantity
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StepButton("−", onMinus)
+                    // Tap the number to type a quantity; press Save (or Done on the keyboard) to keep it.
+                    val edited = qtyText != fmtQty(item.quantity)
+                    BasicTextField(
+                        value = qtyText,
+                        onValueChange = onQtyChange,
+                        singleLine = true,
+                        textStyle = LocalTextStyle.current.copy(
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            color = when {
+                                edited -> MaterialTheme.colorScheme.secondary
+                                item.zeroCount -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { onDone() }),
+                        modifier = Modifier.width(64.dp).padding(horizontal = 4.dp)
+                    )
+                    StepButton("+", onPlus)
+                }
+                Text(item.uom, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary)
             }
         }
         Row(
-            Modifier.fillMaxWidth().clickable { onZeroCount(!item.zeroCount) }.padding(start = 4.dp, end = 14.dp, bottom = 4.dp),
+            Modifier.fillMaxWidth().clickable { onZeroCount(!item.zeroCount) }.padding(start = 4.dp, end = 8.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Checkbox(checked = item.zeroCount, onCheckedChange = onZeroCount)
             Text(
                 "Zero count",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = if (item.zeroCount) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = if (item.zeroCount) FontWeight.SemiBold else FontWeight.Normal,
                 modifier = Modifier.weight(1f)
             )
             TextButton(
                 onClick = onDelete,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
             ) {
-                Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
+                Icon(Icons.Filled.Delete, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Delete")
+                Text("Delete", style = MaterialTheme.typography.bodySmall)
             }
+        }
         }
     }
 }
 
 @Composable
-private fun StepButton(symbol: String, onClick: () -> Unit, primary: Boolean = false) {
+private fun StepButton(symbol: String, onClick: () -> Unit) {
     FilledIconButton(
         onClick = onClick,
-        modifier = Modifier.size(42.dp),
+        modifier = Modifier.size(36.dp),
         shape = CircleShape,
-        colors = if (primary) IconButtonDefaults.filledIconButtonColors(containerColor = Brand, contentColor = Color.White)
-        else IconButtonDefaults.filledIconButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = MaterialTheme.colorScheme.onSurface
-        )
-    ) { Text(symbol, fontSize = 22.sp, fontWeight = FontWeight.Medium) }
+        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Brand, contentColor = Color.White)
+    ) { Text(symbol, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
 }
 
 @Composable
