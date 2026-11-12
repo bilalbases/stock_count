@@ -60,7 +60,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-const val COPYRIGHT_YEAR = 2026
+const val FIRST_YEAR = 2026
+/** "2026" this year, "2026–2027" from next year on, following the phone's date. */
+val COPYRIGHT_YEARS: String
+    get() {
+        val now = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        return if (now > FIRST_YEAR) "$FIRST_YEAR–$now" else "$FIRST_YEAR"
+    }
 
 class MainActivity : ComponentActivity() {
     /** Barcodes from the Zebra hardware scanner, handed to the screen. */
@@ -434,7 +440,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                     )
                 }
                 Text(
-                    "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEAR Bilal",
+                    "Powered by GGHL  ·  Developed by Bilal  ·  © $COPYRIGHT_YEARS Bilal",
                     style = MaterialTheme.typography.labelSmall,
                     color = FooterGrey,
                     textAlign = TextAlign.Center,
@@ -735,7 +741,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                     Text("Version ${BuildConfig.VERSION_NAME}")
                     Text("Powered by GGHL")
                     Text("Developed by Bilal")
-                    Text("© $COPYRIGHT_YEAR Bilal. All rights reserved.")
+                    Text("© $COPYRIGHT_YEARS Bilal. All rights reserved.")
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
