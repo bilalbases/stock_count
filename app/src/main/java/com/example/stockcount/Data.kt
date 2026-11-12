@@ -122,4 +122,8 @@ class Settings(context: Context) {
     var planDate: String
         get() = prefs.getString("planDate", "") ?: ""
         set(v) = prefs.edit().putString("planDate", v).apply()
+    /** "system", "light" or "dark" */
+    var theme: String
+        get() = prefs.getString("theme", "system") ?: "system"
+        set(v) = prefs.edit().putString("theme", v).apply()
 }

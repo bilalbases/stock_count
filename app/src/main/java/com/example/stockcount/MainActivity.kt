@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
         ZebraScanner.configure(this)
         val db = AppDb.get(this)
         val settings = Settings(this)
+        ThemeMode.mode = settings.theme
         setContent {
             StockTheme { StockScreen(db.items(), db.materials(), settings, hardwareScans) }
         }
@@ -330,7 +331,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 ),
                 title = {
                     Column {
-                        Text("Stock Count", fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text("Stock Count", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                " v${BuildConfig.VERSION_NAME}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White.copy(alpha = 0.75f),
+                                modifier = Modifier.padding(start = 4.dp, bottom = 3.dp)
+                            )
+                        }
                         val sub = listOfNotNull(
                             branch.takeIf { it.isNotBlank() }?.let { "Branch $it" },
                             storageLoc.takeIf { it.isNotBlank() }?.let { "SLoc $it" },
@@ -378,6 +387,13 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         DropdownMenuItem(
                             text = { Text("Cloud upload settings") },
                             onClick = { menuOpen = false; showCloud = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Theme: ${ThemeMode.label}") },
+                            onClick = {
+                                ThemeMode.mode = ThemeMode.next()
+                                settings.theme = ThemeMode.mode
+                            }
                         )
                         HorizontalDivider()
                         DropdownMenuItem(

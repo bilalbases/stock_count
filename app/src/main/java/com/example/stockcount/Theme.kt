@@ -6,20 +6,23 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-val Brand = Color(0xFF0E4C92)       // deep blue
-val BrandDark = Color(0xFF0A3770)
+val Brand = Color(0xFF2E358F)       // Alaswaq Alwatania blue
+val BrandDark = Color(0xFF232970)
 val Accent = Color(0xFF00A3A3)      // teal
 val FooterGrey = Color(0xFF8A929E)  // soft grey for the credits line
 
 private val Light = lightColorScheme(
     primary = Brand,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFD6E4FF),
-    onPrimaryContainer = Color(0xFF001B3F),
+    primaryContainer = Color(0xFFDFE0FF),
+    onPrimaryContainer = Color(0xFF0F1450),
     secondary = Accent,
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFC8F3F1),
@@ -35,10 +38,10 @@ private val Light = lightColorScheme(
 )
 
 private val Dark = darkColorScheme(
-    primary = Color(0xFFA9C7FF),
-    onPrimary = Color(0xFF003064),
-    primaryContainer = Color(0xFF12438A),
-    onPrimaryContainer = Color(0xFFD6E4FF),
+    primary = Color(0xFFBDC2FF),
+    onPrimary = Color(0xFF1A1F6E),
+    primaryContainer = Color(0xFF2E358F),
+    onPrimaryContainer = Color(0xFFDFE0FF),
     secondary = Color(0xFF5ADBD8),
     onSecondary = Color(0xFF003736),
     secondaryContainer = Color(0xFF00504E),
@@ -49,10 +52,18 @@ private val Dark = darkColorScheme(
     surfaceContainer = Color(0xFF1C2129),
 )
 
+/** App theme chosen in the menu: "system" (follow the phone), "light" or "dark". */
+object ThemeMode {
+    var mode by mutableStateOf("system")
+    val label get() = when (mode) { "light" -> "Light"; "dark" -> "Dark"; else -> "Phone setting" }
+    fun next() = when (mode) { "system" -> "light"; "light" -> "dark"; else -> "system" }
+}
+
 @Composable
 fun StockTheme(content: @Composable () -> Unit) {
+    val dark = when (ThemeMode.mode) { "light" -> false; "dark" -> true; else -> isSystemInDarkTheme() }
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) Dark else Light,
+        colorScheme = if (dark) Dark else Light,
         shapes = Shapes(
             small = RoundedCornerShape(10.dp),
             medium = RoundedCornerShape(14.dp),
