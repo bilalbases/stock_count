@@ -181,11 +181,17 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     fun uploadToSheet() {
         if (!cloud.isSet) { showCloud = true; return }
         if (uploading) return
+        if (branch.isBlank() || planDate.isBlank()) {
+            detailsOpen = true
+            notify("Enter Branch ID and Plan date before uploading")
+            return
+        }
         uploading = true
-        notify("Uploading to Google Sheet…")
         scope.launch {
+            val list = dao.allOnce()
+            if (list.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            notify("Uploading to Google Sheet…")
             val msg = try {
-                val list = dao.allOnce()
                 val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
                 "✓ Uploaded $n items to Google Sheet as ${cloud.device}"
             } catch (e: Exception) {
