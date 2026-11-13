@@ -177,7 +177,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             doExport()
         }
     }
-    // ---- Google Sheet upload ----
+    // ---- Upload to the Stock Count server (local network) ----
     val cloud = remember { CloudUpload.Config(context) }
     var showCloud by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
@@ -193,12 +193,13 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         scope.launch {
             val list = dao.allOnce()
             if (list.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
-            notify("Uploading to Google Sheet…")
+            notify("Uploading to server…")
             val msg = try {
                 val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                "✓ Uploaded $n items to Google Sheet as ${cloud.device}"
+                "✓ Uploaded $n items to server as ${cloud.device}"
             } catch (e: Exception) {
-                "Upload failed: ${e.message ?: "no connection"}"
+                if (e is java.io.IOException) "Upload failed: server not reachable. Check Wi-Fi and that the server PC is on."
+                else "Upload failed: ${e.message ?: "no connection"}"
             }
             uploading = false
             notify(msg)
@@ -391,7 +392,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Upload to Google Sheet") },
+                            text = { Text("Upload to server") },
                             onClick = { menuOpen = false; uploadToSheet() }
                         )
                         DropdownMenuItem(
@@ -405,7 +406,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Cloud upload settings") },
+                            text = { Text("Upload settings") },
                             onClick = { menuOpen = false; showCloud = true }
                         )
                         DropdownMenuItem(
@@ -778,23 +779,23 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         var device by remember { mutableStateOf(cloud.device) }
         AlertDialog(
             onDismissRequest = { showCloud = false },
-            title = { Text("Cloud upload settings") },
+            title = { Text("Upload settings") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Counts are sent to one Google Sheet so all PDTs end up in one file. " +
-                            "Counting still works offline; only the upload needs Wi-Fi.",
+                        "Counts are sent to the Stock Count server on the local network, which builds " +
+                            "one Excel file per branch. No internet needed; counting itself works offline.",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    OutlinedTextField(url, { url = it.trim() }, label = { Text("Web app URL (…/exec)") }, singleLine = true)
+                    OutlinedTextField(url, { url = it.trim() }, label = { Text("Server URL") }, singleLine = true)
                     OutlinedTextField(key, { key = it }, label = { Text("Key") }, singleLine = true)
                     OutlinedTextField(device, { device = it }, label = { Text("Device name") }, singleLine = true)
                 }
             },
             confirmButton = {
                 TextButton(
-                    enabled = url.startsWith("https://") && key.isNotBlank() && device.isNotBlank(),
-                    onClick = { cloud.url = url; cloud.key = key; cloud.device = device; showCloud = false; notify("Cloud upload settings saved") }
+                    enabled = (url.startsWith("http://") || url.startsWith("https://")) && key.isNotBlank() && device.isNotBlank(),
+                    onClick = { cloud.url = url; cloud.key = key; cloud.device = device; showCloud = false; notify("Upload settings saved") }
                 ) { Text("Save") }
             },
             dismissButton = { TextButton(onClick = { showCloud = false }) { Text("Cancel") } }

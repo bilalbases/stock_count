@@ -18,10 +18,13 @@ android {
         // versionCode follows the GitHub build number so every build is a newer update.
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = 100 + run
-        versionName = "1.38"
+        versionName = "1.39"
         // Google Sheet upload defaults, taken from the GitHub repo secrets SHEET_URL / SHEET_KEY.
         fun quoted(name: String) = "\"" + (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
         buildConfigField("String", "SHEET_URL", quoted("SHEET_URL"))
+        // Default upload target: the Stock Count server on the local network (local-server/).
+        buildConfigField("String", "UPLOAD_URL", "\"" + (System.getenv("UPLOAD_URL")?.takeIf { it.isNotBlank() }
+            ?: "http://192.168.11.162:8080/upload") + "\"")
         buildConfigField("String", "SHEET_KEY", quoted("SHEET_KEY"))
     }
 

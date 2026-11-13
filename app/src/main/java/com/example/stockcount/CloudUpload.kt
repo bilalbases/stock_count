@@ -8,16 +8,21 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Sends this device's counted items to the Google Sheet collector (google-sheet/Code.gs).
- * Each upload replaces this device's previous rows in the Sheet, so it can be repeated safely.
- * Counting itself never needs internet; only this upload does.
+ * Sends this device's counted items to the Stock Count server on the local network
+ * (local-server/StockCountServer.ps1) or, alternatively, the Google Sheet collector (google-sheet/Code.gs).
+ * Each upload replaces this device's previous rows, so it can be repeated safely.
  */
 object CloudUpload {
 
     class Config(private val context: Context) {
-        private val prefs = context.getSharedPreferences("cloud", Context.MODE_PRIVATE)
+        private val prefs = context.getSharedPreferences("cloud", Context.MODE_PRIVATE).also { p ->
+            // Moving from the Google Sheet to the local server: forget a Google URL typed in earlier.
+            if (p.getString("url", "")!!.contains("script.google.com") && !p.getBoolean("movedToLocal", false)) {
+                p.edit().remove("url").putBoolean("movedToLocal", true).apply()
+            }
+        }
         var url: String
-            get() = prefs.getString("url", null)?.takeIf { it.isNotBlank() } ?: BuildConfig.SHEET_URL
+            get() = prefs.getString("url", null)?.takeIf { it.isNotBlank() } ?: BuildConfig.UPLOAD_URL
             set(v) = prefs.edit().putString("url", v.trim()).apply()
         var key: String
             get() = prefs.getString("key", null)?.takeIf { it.isNotBlank() } ?: BuildConfig.SHEET_KEY
@@ -25,7 +30,7 @@ object CloudUpload {
         var device: String
             get() = prefs.getString("device", null) ?: defaultDevice(context)
             set(v) = prefs.edit().putString("device", v.trim()).apply()
-        val isSet get() = url.startsWith("https://") && key.isNotBlank()
+        val isSet get() = (url.startsWith("http://") || url.startsWith("https://")) && key.isNotBlank()
     }
 
     fun defaultDevice(context: Context): String {
@@ -66,7 +71,7 @@ object CloudUpload {
             requestMethod = "POST"
             doOutput = true
             instanceFollowRedirects = false
-            connectTimeout = 20000
+            connectTimeout = 10000
             readTimeout = 60000
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
         }
@@ -77,7 +82,7 @@ object CloudUpload {
             val location = post.getHeaderField("Location") ?: error("Upload failed (redirect without location)")
             post.disconnect()
             val get = (URL(location).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20000; readTimeout = 60000
+                connectTimeout = 10000; readTimeout = 60000
             }
             code = get.responseCode
             text = (if (code < 400) get.inputStream else get.errorStream)?.bufferedReader()?.readText().orEmpty()
@@ -88,7 +93,7 @@ object CloudUpload {
         }
         if (code >= 400) error("Upload failed (HTTP $code)")
         val json = runCatching { JSONObject(text) }.getOrNull()
-            ?: error("Unexpected answer from the Sheet. Check the URL (it must end with /exec).")
+            ?: error("Unexpected answer from the server. Check the URL in Upload settings.")
         if (!json.optBoolean("ok")) error(json.optString("error", "Upload failed"))
         return json.optInt("rows", items.size)
     }
