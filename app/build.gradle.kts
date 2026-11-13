@@ -18,7 +18,7 @@ android {
         // versionCode follows the GitHub build number so every build is a newer update.
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = 100 + run
-        versionName = "1.39"
+        versionName = "1.40"
         // Google Sheet upload defaults, taken from the GitHub repo secrets SHEET_URL / SHEET_KEY.
         fun quoted(name: String) = "\"" + (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"") + "\""
         buildConfigField("String", "SHEET_URL", quoted("SHEET_URL"))

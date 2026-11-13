@@ -32,6 +32,14 @@ object XlsxExport {
         "MATERIAL", "STOCK_TYPE", "ENTRY_QNT", "ENTRY_UOM", "ZERO_COUNT"
     )
 
+    /** Log file: every scan as its own line, in the order scanned. */
+    private val LOG_HEADERS = listOf(
+        "NO", "SCANNED_AT", "PLANT", "STGE_LOC", "SHELF", "BARCODE", "MATERIAL", "DESCRIPTION",
+        "STOCK_TYPE", "COUNTED_QTY", "COUNTED_UOM", "ENTRY_QNT", "ENTRY_UOM", "ZERO_COUNT"
+    )
+    private val LOG_TEXT = setOf(4, 5, 6)
+    private val LOG_WIDTHS = listOf(6, 20, 8, 10, 10, 16, 14, 36, 11, 13, 13, 11, 11, 12)
+
     private fun dateFormat() = SimpleDateFormat("dd.MM.yyyy", Locale.US).apply { isLenient = false }
 
     fun isValidDate(s: String): Boolean =
@@ -41,7 +49,9 @@ object XlsxExport {
      * Writes the export, keeps a copy in Downloads/StockCount, then opens the share menu.
      * Returns where the copy was saved (or null if saving to Downloads failed).
      */
-    class Result(val file: File, val savedTo: String?, val unchanged: Boolean = false)
+    class Result(val file: File, val savedTo: String?, val unchanged: Boolean = false, val logFile: File? = null) {
+        val files get() = listOfNotNull(file, logFile)
+    }
 
     /**
      * Creates the export and saves it to Downloads/StockCount (one file per export; exporting
@@ -55,23 +65,28 @@ object XlsxExport {
         val name = listOfNotNull("PI", branch.ifBlank { null }, stamp).joinToString("_")
             .replace(Regex("[^A-Za-z0-9._-]"), "-")
         val rows = rows(branch, planDate, items, now)
+        val log = logRows(branch, items)
 
         // Nothing changed since the last export (same count, same day)? Don't create another file.
         val prefs = context.getSharedPreferences("export", Context.MODE_PRIVATE)
-        val fingerprint = rows.hashCode().toString()
+        val fingerprint = (rows + log).hashCode().toString()
         val lastFile = prefs.getString("lastFile", null)?.let { File(dir, it) }
+        val lastLog = prefs.getString("lastLog", null)?.let { File(dir, it) }?.takeIf { it.exists() }
         if (fingerprint == prefs.getString("lastFingerprint", null) && lastFile != null && lastFile.exists()) {
-            return Result(lastFile, prefs.getString("lastSaved", null), unchanged = true)
+            return Result(lastFile, prefs.getString("lastSaved", null), unchanged = true, logFile = lastLog)
         }
 
         val file = File(dir, "$name.xlsx")
         write(file, rows)
+        val logFile = File(dir, name.replaceFirst("PI", "LOG") + ".xlsx")
+        write(logFile, log, LOG_HEADERS, LOG_TEXT, LOG_WIDTHS)
         val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
+        val logSaved = runCatching { saveToDownloads(context, logFile) }.getOrNull()
         if (saved != null) {
             prefs.edit().putString("lastFingerprint", fingerprint).putString("lastFile", file.name)
-                .putString("lastSaved", saved).apply()
+                .putString("lastLog", logFile.name).putString("lastSaved", saved).apply()
         }
-        return Result(file, saved)
+        return Result(file, saved?.let { if (logSaved != null) "$it + ${logFile.name}" else it }, logFile = logFile)
     }
 
     class MergeResult(val file: File, val savedTo: String?, val files: Int, val inputRows: Int, val outputRows: Int)
@@ -128,6 +143,19 @@ object XlsxExport {
         write(file, out)
         val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
         return MergeResult(file, saved, uris.size, inputRows, out.size)
+    }
+
+    /** Opens the share menu for several files at once (the PI file and its log file). */
+    fun shareFiles(context: Context, files: List<File>) {
+        if (files.size <= 1) { files.firstOrNull()?.let { shareFile(context, it) }; return }
+        val uris = ArrayList(files.map { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) })
+        val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = XLSX
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            putExtra(Intent.EXTRA_SUBJECT, "Stock count ${files.first().nameWithoutExtension}")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(send, "Share stock count"))
     }
 
     /** Opens the share menu (email, WhatsApp, Drive...) for an exported file. */
@@ -207,7 +235,31 @@ object XlsxExport {
         }
     }
 
-    fun write(file: File, rows: List<List<String>>) {
+    /**
+     * Log rows: one line per scan (duplicates kept), oldest scan first, with shelf and scan time.
+     * Lines saved before v1.40 have no scan time; they come first, in the order they were saved.
+     */
+    fun logRows(branch: String, items: List<Item>): List<List<String>> {
+        val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.US)
+        return items.sortedWith(compareBy({ it.scannedAt }, { it.id })).mapIndexed { i, it ->
+            listOf(
+                (i + 1).toString(),
+                if (it.scannedAt > 0) fmt.format(Date(it.scannedAt)) else "",
+                branch, it.storageLoc, it.shelf, it.barcode,
+                it.material.ifBlank { it.barcode }.ifBlank { it.name }, it.name, it.stockType,
+                fmtQty(it.quantity), it.uom,
+                it.exportQty().toPlainString(), it.exportUom(),
+                if (it.zeroCount && it.quantity == 0.0) "X" else ""
+            )
+        }
+    }
+
+    private val PI_WIDTHS = listOf(12, 12, 10, 10, 10, 10, 16, 12, 12, 12, 13)
+
+    fun write(
+        file: File, rows: List<List<String>>, headers: List<String> = HEADERS,
+        textCols: Set<Int> = setOf(6), widths: List<Int> = PI_WIDTHS,
+    ) {
         // Lock the file: sheet and workbook are protected with a random password that is not
         // stored anywhere, so the count cannot be changed in Excel (it can still be opened,
         // read, printed and uploaded to SAP).
@@ -254,22 +306,23 @@ object XlsxExport {
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>""")
-            put("xl/worksheets/sheet1.xml", sheet(rows, lock))
+            put("xl/worksheets/sheet1.xml", sheet(headers, rows, lock, textCols, widths))
         }
     }
 
-    private fun sheet(rows: List<List<String>>, lock: String): String {
+    private fun sheet(headers: List<String>, rows: List<List<String>>, lock: String, textCols: Set<Int>, widths: List<Int>): String {
+        val cols = widths.mapIndexed { i, w -> "<col min=\"${i + 1}\" max=\"${i + 1}\" width=\"$w\" customWidth=\"1\"/>" }.joinToString("")
         val sb = StringBuilder("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<cols><col min="1" max="2" width="12" customWidth="1"/><col min="3" max="6" width="10" customWidth="1"/><col min="7" max="7" width="16" customWidth="1"/><col min="8" max="8" width="12" customWidth="1"/><col min="9" max="10" width="12" customWidth="1"/><col min="11" max="11" width="13" customWidth="1"/></cols>
+<cols>$cols</cols>
 <sheetData>""")
-        (listOf(HEADERS) + rows).forEachIndexed { r, row ->
+        (listOf(headers) + rows).forEachIndexed { r, row ->
             sb.append("<row r=\"${r + 1}\">")
             row.forEachIndexed { c, v ->
                 if (v.isEmpty()) return@forEachIndexed
                 val ref = "${'A' + c}${r + 1}"
-                // MATERIAL (column G) always stays text so long codes keep every digit.
-                val numeric = r > 0 && c != 6 && Regex("""-?\d{1,9}""").matches(v)
+                // Codes (material, barcode, shelf) always stay text so long codes keep every digit.
+                val numeric = r > 0 && c !in textCols && Regex("""-?\d{1,9}""").matches(v)
                 val style = if (r == 0) 1 else 0   // 1 = bold header; both styles are locked
                 if (numeric) sb.append("<c r=\"$ref\" s=\"$style\"><v>$v</v></c>")
                 else sb.append("<c r=\"$ref\" s=\"$style\" t=\"inlineStr\"><is><t>").append(esc(v)).append("</t></is></c>")

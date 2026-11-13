@@ -163,7 +163,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 withDismissAction = true,
                 duration = SnackbarDuration.Long
             )
-            if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFile(context, result.file)
+            if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFiles(context, result.files)
         }
     }
     // Android 9 and older need permission to write to Downloads.
@@ -245,7 +245,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var current by remember { mutableStateOf<Item?>(null) }
     var currentQty by remember { mutableStateOf("") }
     var currentZero by remember { mutableStateOf(false) }
-    // Same barcode already counted on this shelf (the new quantity is added to it).
+    // Same barcode already counted on this shelf: total of the earlier lines (shown as a hint only).
     var currentExisting by remember { mutableStateOf<Item?>(null) }
 
     /** Saves the scanned item with the typed quantity. Returns false if no quantity was entered. */
@@ -258,17 +258,11 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         }
         val qty = q ?: 0.0
         val zero = currentZero && qty == 0.0
-        val existing = currentExisting
         current = null; currentQty = ""; currentZero = false; currentExisting = null
         scope.launch {
-            if (existing != null) {
-                val total = addQty(existing.quantity, qty)
-                dao.save(existing.copy(quantity = total, zeroCount = zero && total == 0.0))
-                notify("✓ ${item.label()}  +${fmtQty(qty)}  →  ${fmtQty(total)} ${item.uom}")
-            } else {
-                dao.save(item.copy(quantity = qty, zeroCount = zero))
-                notify("✓ Saved ${item.label()}  →  ${fmtQty(qty)} ${item.uom}")
-            }
+            // Every scan is its own line (the PI file adds them up; the log file keeps them apart).
+            dao.save(item.copy(id = 0, quantity = qty, zeroCount = zero, scannedAt = System.currentTimeMillis()))
+            notify("✓ Saved ${item.label()}  →  ${fmtQty(qty)} ${item.uom}")
         }
         return true
     }
@@ -303,16 +297,20 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 if (currentQty.isNotEmpty() || currentZero) saveCurrent()
                 else { current = null; currentExisting = null }
             }
-            val existing = dao.byBarcode(code, shelf.trim())
+            val lines = dao.linesFor(code, shelf.trim())
+            val existing = lines.lastOrNull()
             val m = materials.byBarcode(code)
             if (existing != null || m != null) {
                 // Show it on the Count page with an empty quantity box for the counter to fill in.
-                current = existing?.copy() ?: Item(
-                    name = m!!.description, barcode = code, material = m.material, uom = m.uom,
+                current = if (m != null) Item(
+                    name = m.description, barcode = code, material = m.material, uom = m.uom,
                     baseUom = m.baseUom, factor = m.factor,
                     shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = 0.0
+                ) else existing!!.copy(
+                    id = 0, quantity = 0.0, zeroCount = false, scannedAt = 0,
+                    shelf = shelf.trim(), stockType = stockType.trim(), storageLoc = storageLoc.trim()
                 )
-                currentExisting = existing
+                currentExisting = existing?.copy(quantity = lines.fold(0.0) { acc, i -> addQty(acc, i.quantity) })
                 currentQty = ""
                 currentZero = false
                 pager.animateScrollToPage(0)
@@ -757,16 +755,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 onSave = { newItem ->
                     notFound = null
                     scope.launch {
-                        // If this barcode is already counted on this shelf, add to it instead of making a duplicate.
-                        val existing = newItem.barcode.takeIf { it.isNotEmpty() }?.let { dao.byBarcode(it, newItem.shelf) }
-                        if (existing != null) {
-                            val q = addQty(existing.quantity, newItem.quantity)
-                            dao.save(existing.copy(quantity = q, zeroCount = if (q > 0.0) false else existing.zeroCount))
-                            notify("✓ ${existing.label()}  →  ${fmtQty(q)} ${existing.uom}")
-                        } else {
-                            dao.save(newItem)
-                            notify("✓ Added ${newItem.label()}  →  ${fmtQty(newItem.quantity)} ${newItem.uom}")
-                        }
+                        // Each scan is a separate line, also for barcodes typed in here.
+                        dao.save(newItem.copy(id = 0, scannedAt = System.currentTimeMillis()))
+                        notify("✓ Added ${newItem.label()}  →  ${fmtQty(newItem.quantity)} ${newItem.uom}")
                     }
                 }
             )
@@ -1182,7 +1173,7 @@ fun CurrentItemCard(
             }
             if (alreadyCounted != null) {
                 Text(
-                    "Already counted on this shelf: $alreadyCounted ${item.uom}. The quantity you enter is added to it.",
+                    "Already counted on this shelf: $alreadyCounted ${item.uom}. This count is saved as a separate line.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )

@@ -29,6 +29,8 @@ data class Item(
     @ColumnInfo(defaultValue = "''") val baseUom: String = "",
     /** How many base units one [uom] holds (e.g. 1 OTR = 10 EA). */
     @ColumnInfo(defaultValue = "1") val factor: Double = 1.0,
+    /** When this line was scanned (epoch millis); each scan is its own line. */
+    @ColumnInfo(defaultValue = "0") val scannedAt: Long = 0,
 ) {
     /** Unit written to the export: always the base unit when it is known. */
     fun exportUom(): String = baseUom.ifBlank { uom }
@@ -59,6 +61,9 @@ interface ItemDao {
     suspend fun byBarcode(code: String, shelf: String): Item?
 
     /** Same barcode counted on another shelf, used to pre-fill name and unit. */
+    @Query("SELECT * FROM items WHERE barcode = :code AND barcode != '' AND shelf = :shelf ORDER BY id")
+    suspend fun linesFor(code: String, shelf: String): List<Item>
+
     @Query("SELECT * FROM items WHERE barcode = :code AND barcode != '' LIMIT 1")
     suspend fun anyWithBarcode(code: String): Item?
 
@@ -113,13 +118,20 @@ abstract class MaterialDao {
     }
 }
 
-@Database(entities = [Item::class, Material::class], version = 6, exportSchema = false)
+@Database(entities = [Item::class, Material::class], version = 7, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun items(): ItemDao
     abstract fun materials(): MaterialDao
 
     companion object {
         @Volatile private var instance: AppDb? = null
+
+        /** Adds the scan timestamp; existing lines keep their counts. */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN scannedAt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         /** Quantity becomes a decimal (REAL); counts are copied over unchanged. */
         private val MIGRATION_5_6 = object : Migration(5, 6) {
@@ -143,7 +155,7 @@ abstract class AppDb : RoomDatabase() {
         }
         fun get(context: Context): AppDb = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDb::class.java, "stock.db")
-                .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigration()
                 .build().also { instance = it }
         }

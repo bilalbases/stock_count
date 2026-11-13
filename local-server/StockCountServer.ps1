@@ -6,6 +6,7 @@
   one locked Excel file per branch in the Output folder:
 
       Output\Stock_Count_<year>_<branch>.xlsx      (PI template layout, ready for SAP)
+      Output\Stock_Count_Log_<year>_<branch>.xlsx  (log: every scan as its own line, in scan order)
 
   Open http://<this PC>:8080 in a browser to see which PDTs have uploaded and download the files.
 
@@ -64,11 +65,12 @@ function Random-Password {
 }
 
 # Writes a locked .xlsx (same layout as the app's export). $rows = list of string arrays.
-function Write-Xlsx([string]$path, $header, $rows) {
+function Write-Xlsx([string]$path, $header, $rows, $textCols = @(6), $widths = @(12, 12, 10, 10, 10, 10, 16, 12, 12, 12, 13)) {
     $lock = Legacy-Hash (Random-Password)
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">')
-    [void]$sb.Append('<cols><col min="1" max="2" width="12" customWidth="1"/><col min="3" max="6" width="10" customWidth="1"/><col min="7" max="7" width="16" customWidth="1"/><col min="8" max="10" width="12" customWidth="1"/><col min="11" max="11" width="13" customWidth="1"/></cols><sheetData>')
+    [void]$sb.Append('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>')
+    for ($c = 0; $c -lt $widths.Count; $c++) { [void]$sb.Append("<col min=`"$($c + 1)`" max=`"$($c + 1)`" width=`"$($widths[$c])`" customWidth=`"1`"/>") }
+    [void]$sb.Append('</cols><sheetData>')
     $all = @(,$header) + $rows
     $letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     for ($r = 0; $r -lt $all.Count; $r++) {
@@ -79,8 +81,8 @@ function Write-Xlsx([string]$path, $header, $rows) {
             if ($v -eq '') { continue }
             $ref = "$($letters[$c])$($r + 1)"
             $style = 0; if ($r -eq 0) { $style = 1 }
-            # MATERIAL (column G) always stays text so long codes keep every digit
-            if ($r -gt 0 -and $c -ne 6 -and $v -match '^-?\d{1,9}(\.\d+)?$') {
+            # Codes (material, barcode, shelf) always stay text so long codes keep every digit
+            if ($r -gt 0 -and $textCols -notcontains $c -and $v -match '^-?\d{1,9}(\.\d+)?$') {
                 [void]$sb.Append("<c r=`"$ref`" s=`"$style`"><v>$v</v></c>")
             } else {
                 [void]$sb.Append("<c r=`"$ref`" s=`"$style`" t=`"inlineStr`"><is><t>$(Esc $v)</t></is></c>")
@@ -122,7 +124,7 @@ function Rebuild {
         foreach ($r in @($up.rows)) {
             if ($null -eq $r) { continue }
             $plant = [string]$r.plant
-            if (-not $plants.ContainsKey($plant)) { $plants[$plant] = @{ plan = ''; groups = [ordered]@{} } }
+            if (-not $plants.ContainsKey($plant)) { $plants[$plant] = @{ plan = ''; groups = [ordered]@{}; log = New-Object System.Collections.ArrayList } }
             $p = $plants[$plant]
             if (-not $p.plan -and $r.planDate) { $p.plan = [string]$r.planDate }
             $mat = [string]$r.material; if (-not $mat) { $mat = [string]$r.barcode }
@@ -132,7 +134,14 @@ function Rebuild {
             }
             $g = $p.groups[$key]
             $g.qty += (To-Dec $r.quantity)
-            if ($r.zeroCount -eq $true -or [string]$r.zeroCount -eq 'X') { $g.zero = $true }
+            $isZero = ($r.zeroCount -eq $true -or [string]$r.zeroCount -eq 'X')
+            if ($isZero) { $g.zero = $true }
+            # Log: every scanned line as it is, duplicates kept
+            $ms = [long]0; if ($r.scannedMs) { $ms = [long]$r.scannedMs }
+            $ln = [long]0; if ($r.line) { $ln = [long]$r.line }
+            [void]$p.log.Add(@{ ms = $ms; line = $ln; dev = [string]$up.device; at = [string]$r.scannedAt; sloc = [string]$r.storageLoc
+                shelf = [string]$r.shelf; bc = [string]$r.barcode; mat = $mat; desc = [string]$r.description; type = [string]$r.stockType
+                cq = [string]$r.countedQty; cu = [string]$r.countedUom; qty = [string]$r.quantity; uom = [string]$r.uom; zero = $isZero })
         }
     }
     $header = @('DATE', 'PLAN_DATE', 'GJAHR', 'PLANT', 'STGE_LOC', 'ITEM', 'MATERIAL', 'STOCK_TYPE', 'ENTRY_QNT', 'ENTRY_UOM', 'ZERO_COUNT')
@@ -150,6 +159,19 @@ function Rebuild {
         $name = 'Stock_Count_' + $year + '_' + (Safe-Name $(if ($plant) { $plant } else { 'no-branch' })) + '.xlsx'
         try { Write-Xlsx (Join-Path $Out $name) $header $rows; $written += $name }
         catch { Log "Could not write $name (is it open in Excel?): $($_.Exception.Message)" }
+
+        # Log file: one line per scan, in the order scanned (all PDTs together)
+        $logRows = New-Object System.Collections.ArrayList
+        $i = 0
+        foreach ($l in ($p.log | Sort-Object { $_.ms }, { $_.dev }, { $_.line })) {
+            $i++
+            $zero = ''; if ($l.zero -and (To-Dec $l.qty) -eq 0) { $zero = 'X' }
+            [void]$logRows.Add(@([string]$i, $l.at, $l.dev, $plant, $l.sloc, $l.shelf, $l.bc, $l.mat, $l.desc, $l.type, $l.cq, $l.cu, $l.qty, $l.uom, $zero))
+        }
+        $logHeader = @('NO', 'SCANNED_AT', 'DEVICE', 'PLANT', 'STGE_LOC', 'SHELF', 'BARCODE', 'MATERIAL', 'DESCRIPTION', 'STOCK_TYPE', 'COUNTED_QTY', 'COUNTED_UOM', 'ENTRY_QNT', 'ENTRY_UOM', 'ZERO_COUNT')
+        $logName = 'Stock_Count_Log_' + $year + '_' + (Safe-Name $(if ($plant) { $plant } else { 'no-branch' })) + '.xlsx'
+        try { Write-Xlsx (Join-Path $Out $logName) $logHeader $logRows @(5, 6, 7) @(6, 20, 18, 8, 10, 10, 16, 14, 36, 11, 13, 13, 11, 11, 12); $written += $logName }
+        catch { Log "Could not write $logName (is it open in Excel?): $($_.Exception.Message)" }
     }
     # Remove files of branches that no longer have counts
     foreach ($f in Get-ChildItem -Path $Out -Filter 'Stock_Count_*.xlsx') {

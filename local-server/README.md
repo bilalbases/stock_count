@@ -1,7 +1,7 @@
 # Stock Count local server (Windows)
 
 Collects the counts from all PDTs over the local network (no internet) and builds one
-locked Excel file per branch in the PI template layout: `Output\Stock_Count_<year>_<branch>.xlsx`.
+locked Excel file per branch in the PI template layout: `Output\Stock_Count_<year>_<branch>.xlsx`. Next to it, `Output\Stock_Count_Log_<year>_<branch>.xlsx` lists every scan as its own line (in scan order, with device, shelf and scan time).
 
 ## Install (once)
 1. Copy this folder to the server PC, e.g. `C:\StockCount`.

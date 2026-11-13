@@ -43,8 +43,13 @@ object CloudUpload {
     /** Uploads all items. Returns the number of rows the Sheet received. Throws on failure. */
     fun upload(config: Config, planDate: String, branch: String, items: List<Item>): Int {
         val rows = JSONArray()
-        for (i in items) {
+        val fmt = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm:ss", java.util.Locale.US)
+        // In scan order, so the server's log file lists the lines as they were scanned.
+        for (i in items.sortedWith(compareBy({ it.scannedAt }, { it.id }))) {
             rows.put(JSONObject().apply {
+                put("line", i.id)
+                put("scannedAt", if (i.scannedAt > 0) fmt.format(java.util.Date(i.scannedAt)) else "")
+                put("scannedMs", i.scannedAt)
                 put("planDate", planDate)
                 put("plant", branch)
                 put("storageLoc", i.storageLoc)
