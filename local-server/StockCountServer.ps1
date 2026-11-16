@@ -20,12 +20,30 @@ $Arch   = Join-Path $Here 'data\archive'
 $Out    = Join-Path $Here 'Output'
 $LogF   = Join-Path $Here 'server.log'
 $KeyF   = Join-Path $Here 'key.txt'
+$MailF  = Join-Path $Here 'mail.txt'
 $Inv    = [System.Globalization.CultureInfo]::InvariantCulture
 $Utf8   = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.Web
 foreach ($d in @($Data, $Arch, $Out)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+if (-not (Test-Path $MailF)) {
+    # Mail settings for "Email PI file to inventory officer" (app menu). Fill in and save; no restart needed.
+    @(
+        '# Email settings for the Stock Count server. Lines starting with # are ignored.',
+        '# Office 365: SMTP_HOST=smtp.office365.com, SMTP_PORT=587, SMTP_SSL=yes and a mailbox that is',
+        '# allowed to use SMTP AUTH. Internal Exchange relay: its host name, port 25, SMTP_SSL=no, no user.',
+        'TO=im@aswaqrak.ae',
+        'CC=',
+        'FROM=',
+        'SMTP_HOST=smtp.office365.com',
+        'SMTP_PORT=587',
+        'SMTP_SSL=yes',
+        'SMTP_USER=',
+        'SMTP_PASSWORD=',
+        'ATTACH_LOG=no'
+    ) | Set-Content -Path $MailF -Encoding ASCII
+}
 
 function Log($msg) {
     $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $msg
@@ -179,6 +197,64 @@ function Rebuild {
     }
 }
 
+function Get-Mail {
+    $m = @{}
+    if (Test-Path $MailF) {
+        foreach ($line in Get-Content $MailF) {
+            if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
+            $i = $line.IndexOf('=')
+            $m[$line.Substring(0, $i).Trim().ToUpper()] = $line.Substring($i + 1).Trim()
+        }
+    }
+    return $m
+}
+
+# Emails Output\Stock_Count_<year>_<branch>.xlsx (merged, all PDTs) to the inventory officer.
+function Send-PiMail([string]$branch, [string]$device) {
+    $m = Get-Mail
+    if (-not $m.TO) { throw 'No TO address in mail.txt on the server' }
+    if (-not $m.SMTP_HOST) { throw 'No SMTP_HOST in mail.txt on the server' }
+    $from = $m.FROM; if (-not $from) { $from = $m.SMTP_USER }
+    if (-not $from) { throw 'No FROM address in mail.txt on the server' }
+    Rebuild
+    $year = (Get-Date).ToString('yyyy')
+    $safe = Safe-Name $branch
+    $file = Join-Path $Out ('Stock_Count_' + $year + '_' + $safe + '.xlsx')
+    if (-not (Test-Path $file)) { throw "No counts uploaded for branch $branch yet" }
+    $log = Join-Path $Out ('Stock_Count_Log_' + $year + '_' + $safe + '.xlsx')
+
+    # Count PI lines and the PDTs that uploaded for this branch (for the email text)
+    $devices = @(); $lines = 0
+    foreach ($f in Get-ChildItem -Path $Data -Filter *.json) {
+        $up = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $n = @(@($up.rows) | Where-Object { $_ -and [string]$_.plant -eq $branch }).Count
+        if ($n -gt 0) { $devices += "$($up.device) ($n lines, uploaded $($up.uploadedAt))" }
+    }
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($file)
+    try {
+        $e = $zip.GetEntry('xl/worksheets/sheet1.xml'); $r = New-Object System.IO.StreamReader($e.Open())
+        $lines = ([regex]::Matches($r.ReadToEnd(), '<row ')).Count - 1; $r.Close()
+    } finally { $zip.Dispose() }
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $msg = New-Object System.Net.Mail.MailMessage
+    $msg.From = $from
+    foreach ($a in ($m.TO -split '[;,]')) { if ($a.Trim()) { $msg.To.Add($a.Trim()) } }
+    if ($m.CC) { foreach ($a in ($m.CC -split '[;,]')) { if ($a.Trim()) { $msg.CC.Add($a.Trim()) } } }
+    $msg.Subject = "Stock count PI file - Branch $branch - $((Get-Date).ToString('dd.MM.yyyy HH:mm'))"
+    $msg.Body = "Dear Inventory Officer,`r`n`r`nPlease find attached the merged PI file for branch $branch ($lines lines).`r`n`r`n" +
+        "Counts included from:`r`n  " + ($devices -join "`r`n  ") + "`r`n`r`nSent by $device via the Stock Count app.`r`n"
+    $msg.Attachments.Add((New-Object System.Net.Mail.Attachment($file)))
+    if ($m.ATTACH_LOG -match '^(yes|y|true|1)$' -and (Test-Path $log)) { $msg.Attachments.Add((New-Object System.Net.Mail.Attachment($log))) }
+    $port = 25; if ($m.SMTP_PORT) { $port = [int]$m.SMTP_PORT }
+    $smtp = New-Object System.Net.Mail.SmtpClient($m.SMTP_HOST, $port)
+    $smtp.EnableSsl = ($m.SMTP_SSL -match '^(yes|y|true|1)$')
+    $smtp.Timeout = 60000
+    if ($m.SMTP_USER) { $smtp.Credentials = New-Object System.Net.NetworkCredential($m.SMTP_USER, $m.SMTP_PASSWORD) }
+    try { $smtp.Send($msg) } finally { $msg.Dispose(); $smtp.Dispose() }
+    return @{ to = $m.TO; file = (Split-Path -Leaf $file); rows = $lines }
+}
+
 function Send($ctx, [int]$code, [string]$type, $bytes) {
     $res = $ctx.Response
     $res.StatusCode = $code
@@ -243,6 +319,24 @@ while ($listener.IsListening) {
             Rebuild
             Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items"
             Send-Json $ctx @{ ok = $true; rows = $rows.Count }
+        }
+        elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/email') {
+            $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
+            $body = $reader.ReadToEnd() | ConvertFrom-Json
+            $key = Get-Key
+            if (-not $key -or [string]$body.key -ne $key) { Send-Json $ctx @{ ok = $false; error = 'Wrong key' }; continue }
+            $branch = ([string]$body.branch).Trim()
+            if (-not $branch) { Send-Json $ctx @{ ok = $false; error = 'Missing branch' }; continue }
+            try {
+                $res = Send-PiMail $branch ([string]$body.device)
+                Log "Emailed $($res.file) to $($res.to) (requested by $($body.device))"
+                Send-Json $ctx @{ ok = $true; to = $res.to; file = $res.file; rows = $res.rows }
+            } catch {
+                $err = $_.Exception.Message
+                if ($_.Exception.InnerException) { $err += ' ' + $_.Exception.InnerException.Message }
+                Log "Email for branch $branch failed: $err"
+                Send-Json $ctx @{ ok = $false; error = $err }
+            }
         }
         elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/clear') {
             $form = [System.Web.HttpUtility]::ParseQueryString((New-Object System.IO.StreamReader($req.InputStream)).ReadToEnd())

@@ -102,4 +102,30 @@ object CloudUpload {
         if (!json.optBoolean("ok")) error(json.optString("error", "Upload failed"))
         return json.optInt("rows", items.size)
     }
+
+    class EmailResult(val to: String, val file: String, val rows: Int)
+
+    /**
+     * Asks the local server to email the merged PI file of [branch] (all PDTs together) to the
+     * inventory officer. The address and mail account are set on the server (mail.txt).
+     */
+    fun emailPi(config: Config, branch: String): EmailResult {
+        val url = config.url.trimEnd('/').let { if (it.endsWith("/upload")) it.dropLast(7) else it } + "/email"
+        val body = JSONObject().apply {
+            put("key", config.key); put("device", config.device); put("branch", branch)
+        }.toString()
+        val c = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; doOutput = true
+            connectTimeout = 10000; readTimeout = 90000
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+        c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        val code = c.responseCode
+        val text = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.readText().orEmpty()
+        c.disconnect()
+        val json = runCatching { JSONObject(text) }.getOrNull()
+            ?: error(if (code == 404 || code == 405) "The server needs the update for emailing (StockCountServer.ps1)" else "Unexpected answer from the server (HTTP $code)")
+        if (!json.optBoolean("ok")) error(json.optString("error", "Email failed"))
+        return EmailResult(json.optString("to"), json.optString("file"), json.optInt("rows"))
+    }
 }
