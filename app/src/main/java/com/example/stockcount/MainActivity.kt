@@ -264,7 +264,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
                 notify("Sending PI file by email…")
                 val r = withContext(Dispatchers.IO) { CloudUpload.emailPi(cloud, branch.trim()) }
-                "✓ ${r.file} (${r.rows} lines) emailed to ${r.to}"
+                if (r.already) "Not sent again: no changes since it was emailed at ${r.at} by ${r.by}"
+                else "✓ ${r.file} (${r.rows} lines) emailed to ${r.to}"
             } catch (e: Exception) {
                 if (e is java.io.IOException) "Email failed: server not reachable. Check Wi-Fi and that the server PC is on."
                 else "Email failed: ${e.message ?: "unknown error"}"

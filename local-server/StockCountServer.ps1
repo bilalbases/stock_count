@@ -233,8 +233,21 @@ function Send-PiMail([string]$branch, [string]$device) {
     $zip = [System.IO.Compression.ZipFile]::OpenRead($file)
     try {
         $e = $zip.GetEntry('xl/worksheets/sheet1.xml'); $r = New-Object System.IO.StreamReader($e.Open())
-        $lines = ([regex]::Matches($r.ReadToEnd(), '<row ')).Count - 1; $r.Close()
+        $xml = $r.ReadToEnd(); $r.Close()
+        $lines = ([regex]::Matches($xml, '<row ')).Count - 1
     } finally { $zip.Dispose() }
+
+    # Same PI content already emailed today? Then don't send it again (30 PDTs pressing Send = 1 email).
+    $content = $xml -replace '<sheetProtection[^>]*/>', ''   # the random lock password changes every write
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = [BitConverter]::ToString($sha.ComputeHash($Utf8.GetBytes($content))) -replace '-', ''
+    $sentF = Join-Path $Data ('..\mailed_' + $safe + '.txt')
+    if (Test-Path $sentF) {
+        $prev = (Get-Content $sentF -Raw).Trim() -split '\|'
+        if ($prev[0] -eq $hash) {
+            return @{ already = $true; at = $prev[1]; by = $prev[2]; to = $m.TO; file = (Split-Path -Leaf $file); rows = $lines }
+        }
+    }
 
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $msg = New-Object System.Net.Mail.MailMessage
@@ -252,7 +265,8 @@ function Send-PiMail([string]$branch, [string]$device) {
     $smtp.Timeout = 60000
     if ($m.SMTP_USER) { $smtp.Credentials = New-Object System.Net.NetworkCredential($m.SMTP_USER, $m.SMTP_PASSWORD) }
     try { $smtp.Send($msg) } finally { $msg.Dispose(); $smtp.Dispose() }
-    return @{ to = $m.TO; file = (Split-Path -Leaf $file); rows = $lines }
+    Set-Content -Path $sentF -Value ($hash + '|' + (Get-Date -Format 'dd.MM.yyyy HH:mm') + '|' + $device) -Encoding ASCII
+    return @{ already = $false; to = $m.TO; file = (Split-Path -Leaf $file); rows = $lines }
 }
 
 function Send($ctx, [int]$code, [string]$type, $bytes) {
@@ -329,8 +343,13 @@ while ($listener.IsListening) {
             if (-not $branch) { Send-Json $ctx @{ ok = $false; error = 'Missing branch' }; continue }
             try {
                 $res = Send-PiMail $branch ([string]$body.device)
-                Log "Emailed $($res.file) to $($res.to) (requested by $($body.device))"
-                Send-Json $ctx @{ ok = $true; to = $res.to; file = $res.file; rows = $res.rows }
+                if ($res.already) {
+                    Log "Email for branch $branch skipped: no changes since $($res.at) (requested by $($body.device))"
+                    Send-Json $ctx @{ ok = $true; already = $true; at = $res.at; by = $res.by; to = $res.to; file = $res.file; rows = $res.rows }
+                } else {
+                    Log "Emailed $($res.file) to $($res.to) (requested by $($body.device))"
+                    Send-Json $ctx @{ ok = $true; to = $res.to; file = $res.file; rows = $res.rows }
+                }
             } catch {
                 $err = $_.Exception.Message
                 if ($_.Exception.InnerException) { $err += ' ' + $_.Exception.InnerException.Message }

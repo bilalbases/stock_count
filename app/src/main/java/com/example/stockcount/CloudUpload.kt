@@ -103,7 +103,7 @@ object CloudUpload {
         return json.optInt("rows", items.size)
     }
 
-    class EmailResult(val to: String, val file: String, val rows: Int)
+    class EmailResult(val to: String, val file: String, val rows: Int, val already: Boolean = false, val at: String = "", val by: String = "")
 
     /**
      * Asks the local server to email the merged PI file of [branch] (all PDTs together) to the
@@ -126,6 +126,7 @@ object CloudUpload {
         val json = runCatching { JSONObject(text) }.getOrNull()
             ?: error(if (code == 404 || code == 405) "The server needs the update for emailing (StockCountServer.ps1)" else "Unexpected answer from the server (HTTP $code)")
         if (!json.optBoolean("ok")) error(json.optString("error", "Email failed"))
-        return EmailResult(json.optString("to"), json.optString("file"), json.optInt("rows"))
+        return EmailResult(json.optString("to"), json.optString("file"), json.optInt("rows"),
+            json.optBoolean("already"), json.optString("at"), json.optString("by"))
     }
 }
