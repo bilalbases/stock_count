@@ -26,8 +26,12 @@ netsh advfirewall firewall add rule name="Stock Count server" dir=in action=allo
 
 echo Registering the server to start with Windows...
 schtasks /end /tn "StockCountServer" >nul 2>&1
-schtasks /create /f /tn "StockCountServer" /sc onstart /ru SYSTEM /rl highest ^
-  /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%DIR%\StockCountServer.ps1\"" >nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DIR%\Register-Task.ps1" -Dir "%DIR%"
+if errorlevel 1 (
+  echo Could not use the task settings, using the basic task instead.
+  schtasks /create /f /tn "StockCountServer" /sc minute /mo 5 /ru SYSTEM /rl highest ^
+    /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%DIR%\StockCountServer.ps1\"" >nul
+)
 schtasks /run /tn "StockCountServer" >nul
 
 timeout /t 5 >nul

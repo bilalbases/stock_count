@@ -16,3 +16,8 @@ locked Excel file per branch in the PI template layout: `Output\Stock_Count_<yea
 - New count: on that page, **Clear all counts** (password needed). Old uploads and files are
   moved to `data\archive`, nothing is deleted.
 - Log: `server.log`. To remove: **Uninstall.cmd** as administrator.
+
+## Keeps running by itself
+The task has no time limit (Windows normally stops scheduled tasks after 3 days) and is checked
+every 5 minutes: if the server is not running, it is started again. Re-run Install.cmd after
+updating the files; your password in key.txt is kept.
