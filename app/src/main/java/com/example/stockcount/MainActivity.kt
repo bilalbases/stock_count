@@ -34,7 +34,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Email
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.graphics.SolidColor
@@ -239,42 +238,6 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         }
     }
 
-    // ---- Email the merged PI file of this branch (made on the server) to the inventory officer ----
-    var confirmEmail by remember { mutableStateOf(false) }
-    fun askEmail() {
-        if (!cloud.isSet) { showCloud = true; return }
-        if (branch.isBlank() || planDate.isBlank()) {
-            detailsOpen = true
-            notify("Enter Branch ID and Plan date first")
-            return
-        }
-        confirmEmail = true
-    }
-    fun emailPi() {
-        if (uploading) return
-        uploading = true
-        scope.launch {
-            val msg = try {
-                // Upload this device's latest counts first, so the emailed file includes them.
-                val raw = dao.allOnce()
-                if (raw.isNotEmpty()) {
-                    notify("Uploading this device's counts…")
-                    val (list, _) = withBaseUnits(raw)
-                    withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                }
-                notify("Sending PI file by email…")
-                val r = withContext(Dispatchers.IO) { CloudUpload.emailPi(cloud, branch.trim()) }
-                if (r.already) "Not sent again: no changes since it was emailed at ${r.at} by ${r.by}"
-                else "✓ ${r.file} (${r.rows} lines) emailed to ${r.to}"
-            } catch (e: Exception) {
-                if (e is java.io.IOException) "Email failed: server not reachable. Check Wi-Fi and that the server PC is on."
-                else "Email failed: ${e.message ?: "unknown error"}"
-            }
-            uploading = false
-            notify(msg)
-        }
-    }
-
     // ---- Merge several PI export files (offline) ----
     val mergeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
@@ -461,11 +424,6 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         DropdownMenuItem(
                             text = { Text("Upload to server") },
                             onClick = { menuOpen = false; uploadToSheet() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Email PI file to inventory officer") },
-                            leadingIcon = { Icon(Icons.Filled.Email, null) },
-                            onClick = { menuOpen = false; askEmail() }
                         )
                         DropdownMenuItem(
                             text = { Text("Merge export files") },
@@ -889,22 +847,6 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
-        )
-    }
-
-    if (confirmEmail) {
-        AlertDialog(
-            onDismissRequest = { confirmEmail = false },
-            icon = { Icon(Icons.Filled.Email, null) },
-            title = { Text("Email PI file?") },
-            text = {
-                Text(
-                    "The merged PI file for branch ${branch.trim()} (all PDTs that uploaded) is emailed " +
-                        "from the server to the inventory officer. This device's counts are uploaded first."
-                )
-            },
-            confirmButton = { TextButton(onClick = { confirmEmail = false; emailPi() }) { Text("Send") } },
-            dismissButton = { TextButton(onClick = { confirmEmail = false }) { Text("Cancel") } }
         )
     }
 
