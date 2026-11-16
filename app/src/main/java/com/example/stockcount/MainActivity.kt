@@ -121,7 +121,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 } else {
                     materials.replaceAll(result.materials)
                     "Imported ${result.materials.size} barcodes" +
-                        if (result.skipped > 0) " (${result.skipped} rows skipped, missing material or barcode)" else ""
+                        if (result.skipped > 0) " (${result.skipped} rows skipped, missing material or barcode)" else "" +
+                        if (result.materials.none { it.baseUom.isNotBlank() }) ". ⚠ No BASE_UOM/FACTOR columns: OTR, CAR etc. cannot be converted to the base unit" else ""
                 }
             } catch (e: Exception) {
                 "Import failed: ${e.message}"
@@ -142,6 +143,35 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var planDate by remember { mutableStateOf(settings.planDate) }
     var stockType by remember { mutableStateOf(settings.stockType) }
     var storageLoc by remember { mutableStateOf(settings.storageLoc) }
+    /**
+     * Fills in base unit + factor from the current material list for lines that were counted
+     * without them (e.g. counted before the list with BASE_UOM/FACTOR was imported), and saves
+     * the fix. Returns the lines and the units that still have no base unit (shown as a warning).
+     */
+    suspend fun withBaseUnits(list: List<Item>): Pair<List<Item>, List<String>> {
+        val missing = linkedSetOf<String>()
+        val out = list.map { item ->
+            if (item.baseUom.isNotBlank() || item.material.isBlank()) return@map item
+            val m = materials.unitInfo(item.material, item.uom)
+            if (m != null) {
+                val fixed = item.copy(
+                    baseUom = m.baseUom,
+                    factor = if (m.baseUom.equals(item.uom, true)) 1.0 else m.factor
+                )
+                dao.save(fixed); fixed
+            } else {
+                // Only a problem when the same material was counted in another unit too.
+                if (list.any { it.material == item.material && !it.uom.equals(item.uom, true) })
+                    missing += "${item.material} ${item.uom}"
+                item
+            }
+        }
+        return out to missing.toList()
+    }
+    fun unitWarning(missing: List<String>) =
+        if (missing.isEmpty()) "" else "\n⚠ No base unit in material list for ${missing.take(3).joinToString(", ")}" +
+            (if (missing.size > 3) " +${missing.size - 3} more" else "") + ". Import the list with BASE_UOM and FACTOR."
+
     fun doExport() {
         if (branch.isBlank() || planDate.isBlank()) {
             detailsOpen = true
@@ -149,8 +179,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             return
         }
         scope.launch {
-            val list = dao.allOnce()
-            if (list.isEmpty()) { notify("Nothing counted yet, no file created"); return@launch }
+            val raw = dao.allOnce()
+            if (raw.isEmpty()) { notify("Nothing counted yet, no file created"); return@launch }
+            val (list, missing) = withBaseUnits(raw)
             val result = withContext(Dispatchers.IO) { XlsxExport.export(context, branch.trim(), planDate.trim(), list) }
             snackbar.currentSnackbarData?.dismiss()
             val answer = snackbar.showSnackbar(
@@ -158,7 +189,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                     result.unchanged -> "No changes since last export · ${result.savedTo ?: result.file.name}"
                     result.savedTo != null -> "Saved to ${result.savedTo}"
                     else -> "Could not save to Downloads"
-                },
+                } + unitWarning(missing),
                 actionLabel = "Share",
                 withDismissAction = true,
                 duration = SnackbarDuration.Long
@@ -191,12 +222,13 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         }
         uploading = true
         scope.launch {
-            val list = dao.allOnce()
-            if (list.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            val raw = dao.allOnce()
+            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            val (list, missing) = withBaseUnits(raw)
             notify("Uploading to server…")
             val msg = try {
                 val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                "✓ Uploaded $n items to server as ${cloud.device}"
+                "✓ Uploaded $n items to server as ${cloud.device}" + unitWarning(missing)
             } catch (e: Exception) {
                 if (e is java.io.IOException) "Upload failed: server not reachable. Check Wi-Fi and that the server PC is on."
                 else "Upload failed: ${e.message ?: "no connection"}"

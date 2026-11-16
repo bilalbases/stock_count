@@ -101,6 +101,10 @@ abstract class MaterialDao {
     @Query("SELECT * FROM materials WHERE barcode = :code LIMIT 1")
     abstract suspend fun byBarcode(code: String): Material?
 
+    /** Same material and unit, with a base unit set (any of its barcodes). */
+    @Query("SELECT * FROM materials WHERE material = :material AND uom = :uom COLLATE NOCASE AND baseUom != '' LIMIT 1")
+    abstract suspend fun unitInfo(material: String, uom: String): Material?
+
     @Query("SELECT COUNT(*) FROM materials")
     abstract fun count(): Flow<Int>
 
