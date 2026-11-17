@@ -809,7 +809,12 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(url, { url = it.trim() }, label = { Text("Server URL") }, singleLine = true)
-                    OutlinedTextField(key, { key = it }, label = { Text("Key") }, singleLine = true)
+                    OutlinedTextField(
+                        key, { key = it }, label = { Text("Key") }, singleLine = true,
+                        // Shown as dots, like a password
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    )
                     OutlinedTextField(device, { device = it }, label = { Text("Device name") }, singleLine = true)
                 }
             },
