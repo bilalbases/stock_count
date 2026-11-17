@@ -1250,7 +1250,7 @@ fun StockTypeField(value: String, onChange: (String) -> Unit, modifier: Modifier
     val shown = STOCK_TYPES.firstOrNull { it.equals(value, ignoreCase = true) } ?: value
     ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }, modifier = modifier) {
         OutlinedTextField(
-            value = shown.ifEmpty { "<blank>" },
+            value = shown,
             onValueChange = {},
             readOnly = true,
             singleLine = true,
@@ -1261,7 +1261,7 @@ fun StockTypeField(value: String, onChange: (String) -> Unit, modifier: Modifier
         ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             STOCK_TYPES.forEach { t ->
                 DropdownMenuItem(
-                    text = { Text(t.ifEmpty { "<blank>" }) },
+                    text = { Text(t.ifEmpty { " " }) },   // first entry: empty = no stock type
                     onClick = { onChange(t.uppercase()); open = false }
                 )
             }
