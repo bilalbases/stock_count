@@ -539,7 +539,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("Count details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                    Text("Header Details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                     if (!detailsOpen) {
                                         val summary = listOf(
                                             "Branch ${branch.ifBlank { "–" }}",
@@ -593,11 +593,9 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                             singleLine = true,
                                             modifier = Modifier.weight(1f)
                                         )
-                                        OutlinedTextField(
+                                        StockTypeField(
                                             value = stockType,
-                                            onValueChange = { stockType = it.uppercase(); settings.stockType = stockType },
-                                            label = { Text("Stock type") },
-                                            singleLine = true,
+                                            onChange = { stockType = it; settings.stockType = it },
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
@@ -1134,7 +1132,7 @@ fun EditDialog(
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
                 OutlinedTextField(storageLoc, { storageLoc = it.uppercase() }, label = { Text("Storage location") }, singleLine = true)
-                OutlinedTextField(stockType, { stockType = it.uppercase() }, label = { Text("Stock type") }, singleLine = true)
+                StockTypeField(stockType, { stockType = it })
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
                     Text("Zero count")
@@ -1234,6 +1232,36 @@ fun CurrentItemCard(
                     enabled = qty.isNotEmpty() || zeroCount,
                     colors = ButtonDefaults.buttonColors(containerColor = Brand, contentColor = Color.White)
                 ) { Text("Save") }
+            }
+        }
+    }
+}
+
+/** Stock types to pick from (saved and exported in capitals, blank = none). */
+val STOCK_TYPES = listOf("", "All", "Fresh", "Can", "Cigarette", "Butchery", "Roastery", "Damaged", "Expired", "Dry_Container", "Other")
+
+/** Stock type as a dropdown list instead of free text. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun StockTypeField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    var open by remember { mutableStateOf(false) }
+    val shown = STOCK_TYPES.firstOrNull { it.equals(value, ignoreCase = true) } ?: value
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }, modifier = modifier) {
+        OutlinedTextField(
+            value = shown.ifEmpty { "<blank>" },
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text("Stock type") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            STOCK_TYPES.forEach { t ->
+                DropdownMenuItem(
+                    text = { Text(t.ifEmpty { "<blank>" }) },
+                    onClick = { onChange(t.uppercase()); open = false }
+                )
             }
         }
     }
