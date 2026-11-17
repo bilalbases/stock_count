@@ -1238,7 +1238,9 @@ fun CurrentItemCard(
 }
 
 /** Stock types to pick from (saved and exported in capitals, blank = none). */
-val STOCK_TYPES = listOf("", "All", "Fresh", "Can", "Cigarette", "Butchery", "Roastery", "Damaged", "Expired", "Dry_Container", "Other")
+val STOCK_TYPES = listOf("") +
+    listOf("All", "Fresh", "Can", "Cigarette", "Butchery", "Roastery", "Damaged", "Expired", "Dry_Container", "Other")
+        .sortedBy { it.lowercase() }   // blank first, then A-Z
 
 /** Stock type as a dropdown list instead of free text. */
 @OptIn(ExperimentalMaterial3Api::class)
