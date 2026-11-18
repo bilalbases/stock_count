@@ -28,6 +28,9 @@ jobs:
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           # Same APK with the version in the file name, e.g. stock-count-v1.44.apk
           cp stock-count.apk "stock-count-v$APP_VERSION.apk"
+          # Server files for the 162 PC, downloadable from the same release
+          cp local-server/StockCountServer.ps1 StockCountServer.ps1
+          (cd local-server && zip -q ../StockCountServer.zip StockCountServer.ps1 Install.cmd Uninstall.cmd Register-Task.ps1 README.md)
       - uses: actions/upload-artifact@v4
         with:
           name: stock-count-apk
@@ -42,4 +45,6 @@ jobs:
           files: |
             stock-count.apk
             stock-count-v${{ env.APP_VERSION }}.apk
+            StockCountServer.ps1
+            StockCountServer.zip
           make_latest: true
