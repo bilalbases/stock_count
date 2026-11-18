@@ -588,7 +588,11 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         OutlinedTextField(
                                             value = storageLoc,
-                                            onValueChange = { storageLoc = it.uppercase(); settings.storageLoc = storageLoc },
+                                            onValueChange = {
+                                                storageLoc = it.uppercase(); settings.storageLoc = storageLoc
+                                                // Known storage location -> its stock type (e.g. 1004 -> FROZEN)
+                                                stockTypeFor(storageLoc)?.let { t -> stockType = t; settings.stockType = t }
+                                            },
                                             label = { Text("Storage location") },
                                             singleLine = true,
                                             modifier = Modifier.weight(1f)
@@ -1136,7 +1140,7 @@ fun EditDialog(
                 )
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
-                OutlinedTextField(storageLoc, { storageLoc = it.uppercase() }, label = { Text("Storage location") }, singleLine = true)
+                OutlinedTextField(storageLoc, { storageLoc = it.uppercase(); stockTypeFor(storageLoc)?.let { t -> stockType = t } }, label = { Text("Storage location") }, singleLine = true)
                 StockTypeField(stockType, { stockType = it })
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
@@ -1242,10 +1246,22 @@ fun CurrentItemCard(
     }
 }
 
-/** Stock types to pick from (saved and exported in capitals, blank = none). */
-val STOCK_TYPES = listOf("") +
-    listOf("All", "Fresh", "Can", "Cigarette", "Butchery", "Roastery", "Damaged", "Expired", "Dry_Container", "Other")
-        .sortedBy { it.lowercase() }   // blank first, then A-Z
+/** Storage location (SAP SLoc) -> stock type. Typing the SLoc fills in the stock type. */
+val SLOC_STOCK_TYPES = linkedMapOf(
+    "1001" to "Sales Location",
+    "1002" to "Warehouse",
+    "1003" to "Wholesale Invent",
+    "1004" to "Frozen",
+    "1005" to "Damage & Expiry",
+    "1006" to "Non-Moving & Exs",
+    "1007" to "Dry Container",
+)
+
+/** Stock type for a storage location, in capitals as exported (null = unknown SLoc). */
+fun stockTypeFor(sloc: String): String? = SLOC_STOCK_TYPES[sloc.trim()]?.uppercase()
+
+/** Stock types to pick from (saved and exported in capitals, blank first, then A-Z). */
+val STOCK_TYPES = listOf("") + SLOC_STOCK_TYPES.values.sortedBy { it.lowercase() }
 
 /** Stock type as a dropdown list instead of free text. */
 @OptIn(ExperimentalMaterial3Api::class)
