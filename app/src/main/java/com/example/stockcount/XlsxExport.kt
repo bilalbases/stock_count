@@ -49,44 +49,51 @@ object XlsxExport {
      * Writes the export, keeps a copy in Downloads/StockCount, then opens the share menu.
      * Returns where the copy was saved (or null if saving to Downloads failed).
      */
-    class Result(val file: File, val savedTo: String?, val unchanged: Boolean = false, val logFile: File? = null) {
-        val files get() = listOfNotNull(file, logFile)
+    class Result(val piFiles: List<File>, val savedTo: String?, val unchanged: Boolean = false, val logFile: File? = null) {
+        val file get() = piFiles.first()
+        val files get() = piFiles + listOfNotNull(logFile)
     }
 
     /**
-     * Creates the export and saves it to Downloads/StockCount (one file per export; exporting
-     * again in the same minute replaces that file instead of making a duplicate).
-     * Sharing is a separate, optional step: [shareFile].
+     * Creates the export and saves it to Downloads/StockCount: ONE PI FILE PER STORAGE LOCATION
+     * (e.g. PI_1090_1001_<time>.xlsx and PI_1090_1005_<time>.xlsx) plus one log file with every scan.
+     * Exporting again in the same minute replaces those files instead of making duplicates.
+     * Sharing is a separate, optional step: [shareFiles].
      */
     fun export(context: Context, branch: String, planDate: String, items: List<Item>): Result {
         val now = Date()
         val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(now)
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
-        val name = listOfNotNull("PI", branch.ifBlank { null }, stamp).joinToString("_")
-            .replace(Regex("[^A-Za-z0-9._-]"), "-")
-        val rows = rows(branch, planDate, items, now)
+        fun fileName(vararg parts: String?) = parts.filterNot { it.isNullOrBlank() }.joinToString("_")
+            .replace(Regex("[^A-Za-z0-9._-]"), "-") + ".xlsx"
+        val bySloc = items.groupBy { it.storageLoc.trim() }.toSortedMap()
+        val piRows = bySloc.mapValues { (_, list) -> rows(branch, planDate, list, now) }
         val log = logRows(branch, items)
 
-        // Nothing changed since the last export (same count, same day)? Don't create another file.
+        // Nothing changed since the last export (same count, same day)? Don't create more files.
         val prefs = context.getSharedPreferences("export", Context.MODE_PRIVATE)
-        val fingerprint = (rows + log).hashCode().toString()
-        val lastFile = prefs.getString("lastFile", null)?.let { File(dir, it) }
+        val fingerprint = (piRows.toString() + log.hashCode()).hashCode().toString()
+        val lastFiles = prefs.getString("lastFiles", null)?.split('|')?.filter { it.isNotEmpty() }?.map { File(dir, it) }.orEmpty()
         val lastLog = prefs.getString("lastLog", null)?.let { File(dir, it) }?.takeIf { it.exists() }
-        if (fingerprint == prefs.getString("lastFingerprint", null) && lastFile != null && lastFile.exists()) {
-            return Result(lastFile, prefs.getString("lastSaved", null), unchanged = true, logFile = lastLog)
+        if (fingerprint == prefs.getString("lastFingerprint", null) && lastFiles.isNotEmpty() && lastFiles.all { it.exists() }) {
+            return Result(lastFiles, prefs.getString("lastSaved", null), unchanged = true, logFile = lastLog)
         }
 
-        val file = File(dir, "$name.xlsx")
-        write(file, rows)
-        val logFile = File(dir, name.replaceFirst("PI", "LOG") + ".xlsx")
-        write(logFile, log, LOG_HEADERS, LOG_TEXT, LOG_WIDTHS)
-        val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
-        val logSaved = runCatching { saveToDownloads(context, logFile) }.getOrNull()
-        if (saved != null) {
-            prefs.edit().putString("lastFingerprint", fingerprint).putString("lastFile", file.name)
-                .putString("lastLog", logFile.name).putString("lastSaved", saved).apply()
+        val piFiles = piRows.map { (sloc, rows) ->
+            File(dir, fileName("PI", branch, sloc.ifBlank { "no-sloc" }, stamp)).also { write(it, rows) }
         }
-        return Result(file, saved?.let { if (logSaved != null) "$it + ${logFile.name}" else it }, logFile = logFile)
+        val logFile = File(dir, fileName("LOG", branch, stamp))
+        write(logFile, log, LOG_HEADERS, LOG_TEXT, LOG_WIDTHS)
+        val saved = piFiles.mapNotNull { f -> runCatching { saveToDownloads(context, f) }.getOrNull() }
+        val logSaved = runCatching { saveToDownloads(context, logFile) }.getOrNull()
+        val savedTo = if (saved.isEmpty()) null else
+            "Downloads/StockCount: ${piFiles.size} PI file" + (if (piFiles.size > 1) "s" else "") +
+                " (" + piRows.keys.joinToString(", ") { it.ifBlank { "no SLoc" } } + ")" + (if (logSaved != null) " + log" else "")
+        if (savedTo != null) {
+            prefs.edit().putString("lastFingerprint", fingerprint).putString("lastFiles", piFiles.joinToString("|") { it.name })
+                .putString("lastLog", logFile.name).putString("lastSaved", savedTo).apply()
+        }
+        return Result(piFiles, savedTo, logFile = logFile)
     }
 
     class MergeResult(val file: File, val savedTo: String?, val files: Int, val inputRows: Int, val outputRows: Int)

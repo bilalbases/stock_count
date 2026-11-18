@@ -5,7 +5,7 @@
   device's rows, so corrections are never counted twice. After every upload the server rebuilds
   one locked Excel file per branch in the Output folder:
 
-      Output\Stock_Count_<year>_<branch>.xlsx      (PI template layout, ready for SAP)
+      Output\Stock_Count_<year>_<branch>_<sloc>.xlsx (PI template layout, one per storage location)
       Output\Stock_Count_Log_<year>_<branch>.xlsx  (log: every scan as its own line, in scan order)
 
   Open http://<this PC>:8080 in a browser to see which PDTs have uploaded and download the files.
@@ -132,7 +132,7 @@ function Write-Xlsx([string]$path, $header, $rows, $textCols = @(6), $widths = @
     Move-Item -Path $tmp -Destination $path -Force   # fails only if the file is open in Excel
 }
 
-# Rebuilds Output\Stock_Count_<year>_<branch>.xlsx from all device uploads.
+# Rebuilds Output\Stock_Count_<year>_<branch>_<sloc>.xlsx from all device uploads.
 function Rebuild {
     $now = Get-Date
     $today = $now.ToString('dd.MM.yyyy'); $year = $now.ToString('yyyy')
@@ -167,16 +167,20 @@ function Rebuild {
     foreach ($plant in ($plants.Keys | Sort-Object)) {
         $p = $plants[$plant]
         $plan = $p.plan; if (-not $plan) { $plan = $today }
-        $rows = New-Object System.Collections.ArrayList
-        $i = 0
-        foreach ($g in ($p.groups.Values | Sort-Object { $_.sloc }, { $_.mat })) {
-            $i++
-            $zero = ''; if ($g.zero -and $g.qty -eq 0) { $zero = 'X' }
-            [void]$rows.Add(@($today, $plan, $year, $plant, $g.sloc, [string]$i, $g.mat, $g.type, (Fmt-Dec $g.qty), $g.uom, $zero))
+        # One PI file per storage location: Stock_Count_<year>_<branch>_<sloc>.xlsx
+        foreach ($sg in ($p.groups.Values | Group-Object { $_.sloc } | Sort-Object Name)) {
+            $rows = New-Object System.Collections.ArrayList
+            $i = 0
+            foreach ($g in ($sg.Group | Sort-Object { $_.mat })) {
+                $i++
+                $zero = ''; if ($g.zero -and $g.qty -eq 0) { $zero = 'X' }
+                [void]$rows.Add(@($today, $plan, $year, $plant, $g.sloc, [string]$i, $g.mat, $g.type, (Fmt-Dec $g.qty), $g.uom, $zero))
+            }
+            $sloc = [string]$sg.Name; if (-not $sloc) { $sloc = 'no-sloc' }
+            $name = 'Stock_Count_' + $year + '_' + (Safe-Name $(if ($plant) { $plant } else { 'no-branch' })) + '_' + (Safe-Name $sloc) + '.xlsx'
+            try { Write-Xlsx (Join-Path $Out $name) $header $rows; $written += $name }
+            catch { Log "Could not write $name (is it open in Excel?): $($_.Exception.Message)" }
         }
-        $name = 'Stock_Count_' + $year + '_' + (Safe-Name $(if ($plant) { $plant } else { 'no-branch' })) + '.xlsx'
-        try { Write-Xlsx (Join-Path $Out $name) $header $rows; $written += $name }
-        catch { Log "Could not write $name (is it open in Excel?): $($_.Exception.Message)" }
 
         # Log file: one line per scan, in the order scanned (all PDTs together)
         $logRows = New-Object System.Collections.ArrayList

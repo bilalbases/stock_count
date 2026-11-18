@@ -1,7 +1,7 @@
 # Stock Count local server (Windows)
 
 Collects the counts from all PDTs over the local network (no internet) and builds one
-locked Excel file per branch in the PI template layout: `Output\Stock_Count_<year>_<branch>.xlsx`. Next to it, `Output\Stock_Count_Log_<year>_<branch>.xlsx` lists every scan as its own line (in scan order, with device, shelf and scan time).
+locked Excel file per branch and storage location in the PI template layout: `Output\Stock_Count_<year>_<branch>_<sloc>.xlsx` (e.g. Stock_Count_2026_1090_1001.xlsx). Next to it, `Output\Stock_Count_Log_<year>_<branch>.xlsx` lists every scan as its own line (in scan order, with device, shelf and scan time).
 
 ## Install (once)
 1. Copy this folder to the server PC, e.g. `C:\StockCount`.
@@ -21,10 +21,3 @@ locked Excel file per branch in the PI template layout: `Output\Stock_Count_<yea
 The task has no time limit (Windows normally stops scheduled tasks after 3 days) and is checked
 every 5 minutes: if the server is not running, it is started again. Re-run Install.cmd after
 updating the files; your password in key.txt is kept.
-
-## Email PI file to the inventory officer
-App menu > **Email PI file to inventory officer** uploads that device's counts and asks this server
-to email `Stock_Count_<year>_<branch>.xlsx` (all PDTs merged) to the address in **mail.txt**
-(created on first start, TO=im@aswaqrak.ae). Fill in the mail account in mail.txt and save; no
-restart needed. This PC needs access to the mail server (e.g. smtp.office365.com port 587).
-Set ATTACH_LOG=yes to also attach the log file. Errors are written to server.log.
