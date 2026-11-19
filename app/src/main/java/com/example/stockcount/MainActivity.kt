@@ -212,24 +212,6 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     val cloud = remember { CloudUpload.Config(context) }
     var showCloud by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
-    var confirmRemoveUpload by remember { mutableStateOf(false) }
-    // Sends an empty list: the server then forgets this PDT's earlier upload.
-    fun removeFromServer() {
-        if (uploading) return
-        uploading = true
-        scope.launch {
-            notify("Removing this PDT's counts from the server…")
-            val msg = try {
-                withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), emptyList()) }
-                "✓ This PDT's earlier upload was removed from the server"
-            } catch (e: Exception) {
-                if (e is java.io.IOException) "Failed: server not reachable. Check Wi-Fi and that the server PC is on."
-                else "Failed: ${e.message ?: "no connection"}"
-            }
-            uploading = false
-            notify(msg)
-        }
-    }
     fun uploadToSheet() {
         if (!cloud.isSet) { showCloud = true; return }
         if (uploading) return
@@ -241,7 +223,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         uploading = true
         scope.launch {
             val raw = dao.allOnce()
-            if (raw.isEmpty()) { uploading = false; confirmRemoveUpload = true; return@launch }
+            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
             val (list, missing) = withBaseUnits(raw)
             notify("Uploading to server…")
             val msg = try {
@@ -880,28 +862,13 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             onDismissRequest = { confirmClear = false },
             title = { Text("Start a new count?") },
             text = { Text("This deletes all ${items.size} items on this PDT. Export first if you need them.\n\n" +
-                "Counts already uploaded stay on the server. To remove them too, choose Upload to server afterwards.") },
+                "Counts already uploaded stay on the server. Only the administrator can clear them on the server.") },
             confirmButton = {
                 TextButton(onClick = { scope.launch { dao.deleteAll() }; confirmClear = false }) {
                     Text("Delete all", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
-        )
-    }
-
-    if (confirmRemoveUpload) {
-        AlertDialog(
-            onDismissRequest = { confirmRemoveUpload = false },
-            title = { Text("Nothing counted on this PDT") },
-            text = { Text("Remove this PDT's earlier upload (${cloud.device}) from the server?\n\n" +
-                "Its lines will disappear from the PI and LOG files. Other PDTs are not affected.") },
-            confirmButton = {
-                TextButton(onClick = { confirmRemoveUpload = false; removeFromServer() }) {
-                    Text("Remove from server", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { confirmRemoveUpload = false }) { Text("Cancel") } }
         )
     }
 

@@ -13,7 +13,6 @@
   Starting a new count: press "Clear all counts" on that page, or simply delete all files in the
   Output folder. When Output has no Stock_Count files left, the next upload first moves every
   PDT's earlier upload to data\archive, so old branches and dates do not come back.
-  A PDT with nothing counted can remove its own earlier upload (app: Upload to server).
 
   Install once with Install.cmd (runs as administrator). It starts automatically with Windows.
 #>
