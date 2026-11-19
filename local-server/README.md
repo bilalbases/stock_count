@@ -15,6 +15,10 @@ locked Excel file per branch and storage location in the PI template layout: `Ou
   download the Excel files (they are also in the `Output` folder).
 - New count: on that page, **Clear all counts** (password needed). Old uploads and files are
   moved to `data\archive`, nothing is deleted.
+- Or simply delete all files in the `Output` folder: the next upload then archives every PDT's
+  earlier upload first, so old branches, storage locations and dates do not come back.
+- One PDT with old counts: **Remove one PDT's upload** on that page, or on the PDT itself
+  ⋮ > Start new count, then ⋮ > Upload to server > Remove from server.
 - Log: `server.log`. To remove: **Uninstall.cmd** as administrator.
 
 ## Keeps running by itself

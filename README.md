@@ -32,7 +32,8 @@ A simple app for counting stock.
 - **Save** (bottom left) stores typed quantities. − / +, zero count and scans are saved straight away.
   Items are only added by scanning; there is no manual add form.
 - **Export icon** saves one Excel file (.xlsx) to Downloads/StockCount on the device. A message with a **Share** button appears if you want to send it (email, WhatsApp, Drive). If nothing changed since the last export, no new file is created; exporting again in the same minute replaces the file. The Save button never creates files. The file is in the PI template layout: DATE (today), PLAN_DATE (Plan date field), GJAHR (current year), PLANT (branch), STGE_LOC (Storage location field, editable per item; shelf ID stays in the app only), ITEM, MATERIAL (from the material list), STOCK_TYPE (Stock type field, editable per item), ENTRY_QNT, ENTRY_UOM, ZERO_COUNT (X). The exported file is locked (sheet and workbook protection with a random password) so it cannot be edited in Excel.
-- **⋮ > Start new count** deletes all items.
+- **⋮ > Start new count** deletes all items on the PDT. Uploading with nothing counted offers to
+  remove this PDT's earlier upload from the server.
 - **Merging many PDTs into one file** (quantities of the same plant + storage location + material +
   stock type + unit are added into one row, ITEM is renumbered):
   - *Online, Google Sheet:* set up once with [google-sheet/Code.gs](google-sheet/Code.gs) (steps at the

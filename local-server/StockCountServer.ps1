@@ -10,6 +10,11 @@
 
   Open http://<this PC>:8080 in a browser to see which PDTs have uploaded and download the files.
 
+  Starting a new count: press "Clear all counts" on that page, or simply delete all files in the
+  Output folder. When Output has no Stock_Count files left, the next upload first moves every
+  PDT's earlier upload to data\archive, so old branches and dates do not come back.
+  A PDT with nothing counted can remove its own earlier upload (app: Upload to server).
+
   Install once with Install.cmd (runs as administrator). It starts automatically with Windows.
 #>
 
@@ -285,13 +290,20 @@ function Send-Json($ctx, $obj, [int]$code = 200) { Send $ctx $code 'application/
 function Send-Html($ctx, [string]$html) { Send $ctx 200 'text/html; charset=utf-8' ($Utf8.GetBytes($html)) }
 
 function Status-Page([string]$note) {
-    $dev = ''
+    $dev = ''; $opts = ''
     foreach ($f in (Get-ChildItem -Path $Data -Filter *.json | Sort-Object LastWriteTime -Descending)) {
         $up = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         $branches = (@($up.rows) | ForEach-Object { $_.plant } | Sort-Object -Unique) -join ', '
-        $dev += "<tr><td>$(Esc $up.device)</td><td>$(Esc $branches)</td><td>$(@($up.rows).Count)</td><td>$(Esc $up.uploadedAt)</td></tr>"
+        $first = (@($up.rows) | Where-Object { $_.scannedMs } | Sort-Object { [long]$_.scannedMs } | Select-Object -First 1).scannedAt
+        $dev += "<tr><td>$(Esc $up.device)</td><td>$(Esc $branches)</td><td>$(@($up.rows).Count)</td><td>$(Esc $first)</td><td>$(Esc $up.uploadedAt)</td></tr>"
+        $opts += "<option value=`"$(Esc $f.BaseName)`">$(Esc $up.device) ($(Esc $branches))</option>"
     }
-    if (-not $dev) { $dev = '<tr><td colspan="4">No uploads yet</td></tr>' }
+    if (-not $dev) { $dev = '<tr><td colspan="5">No uploads yet</td></tr>' }
+    $remove = ''
+    if ($opts) {
+        $remove = "<form method=`"post`" action=`"/remove`"><b>Remove one PDT's upload</b><br><small>For a PDT with old or wrong counts. Its upload is moved to data\archive.</small><br><br>" +
+            "PDT: <select name=`"device`">$opts</select> Password: <input type=`"password`" name=`"key`"> <button type=`"submit`">Remove</button></form>"
+    }
     $files = ''
     foreach ($f in (Get-ChildItem -Path $Out -Filter *.xlsx | Sort-Object Name)) {
         $files += "<li><a href=`"/files/$([uri]::EscapeDataString($f.Name))`">$(Esc $f.Name)</a> <small>($($f.LastWriteTime.ToString('dd.MM.yyyy HH:mm')))</small></li>"
@@ -307,8 +319,9 @@ li{margin:6px 0}a{color:#2E358F;font-weight:600}.note{background:#e8f5e9;padding
 form{margin-top:28px;padding:12px;border:1px solid #f0c0c0;border-radius:6px;background:#fff8f8}small{color:#777}</style></head><body>
 <h1>Stock Count server</h1><small>Updated $(Get-Date -Format 'dd.MM.yyyy HH:mm:ss') &middot; refreshes every 30 s</small>$msg
 <h2>PI files (one per branch)</h2><ul>$files</ul>
-<h2>Uploads</h2><table><tr><th>Device</th><th>Branch</th><th>Items</th><th>Last upload</th></tr>$dev</table>
-<form method="post" action="/clear"><b>Start a new count</b><br><small>Moves all uploads and files to data\archive (nothing is deleted).</small><br><br>
+<h2>Uploads</h2><table><tr><th>Device</th><th>Branch</th><th>Items</th><th>First scan</th><th>Last upload</th></tr>$dev</table>
+$remove
+<form method="post" action="/clear"><b>Start a new count</b><br><small>Moves all uploads and files to data\archive (nothing is deleted). Deleting all files in the Output folder does the same at the next upload.</small><br><br>
 Password: <input type="password" name="key"> <button type="submit">Clear all counts</button></form>
 </body></html>
 "@
@@ -331,11 +344,27 @@ while ($listener.IsListening) {
             if (-not $key -or [string]$body.key -ne $key) { Send-Json $ctx @{ ok = $false; error = 'Wrong key' }; Log "Rejected upload from $($req.RemoteEndPoint): wrong key"; continue }
             $device = ([string]$body.device).Trim()
             if (-not $device) { Send-Json $ctx @{ ok = $false; error = 'Missing device name' }; continue }
-            $rows = @(); if ($null -ne $body.rows) { $rows = @($body.rows) }
-            $save = [ordered]@{ device = $device; uploadedAt = (Get-Date -Format 'dd.MM.yyyy HH:mm:ss'); rows = $rows }
-            [System.IO.File]::WriteAllText((Join-Path $Data ((Safe-Name $device) + '.json')), ($save | ConvertTo-Json -Depth 6), $Utf8)
+            $rows = @(); if ($null -ne $body.rows) { $rows = @(@($body.rows) | Where-Object { $null -ne $_ }) }
+            # Output emptied by hand (all PI/LOG files deleted) = a new count: archive all earlier uploads
+            # first, otherwise the other PDTs' old uploads would rebuild the deleted files.
+            $old = @(Get-ChildItem -Path $Data -Filter *.json)
+            if ($old.Count -gt 0 -and @(Get-ChildItem -Path $Out -Filter 'Stock_Count_*.xlsx').Count -eq 0) {
+                $dest = Join-Path $Arch ((Get-Date -Format 'yyyy-MM-dd_HHmmss') + '_output-emptied')
+                New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                $old | Move-Item -Destination $dest -Force
+                Log "Output folder was empty: started a new count, $($old.Count) earlier uploads archived to $dest"
+            }
+            $devFile = Join-Path $Data ((Safe-Name $device) + '.json')
+            if ($rows.Count -eq 0) {
+                # Nothing counted on the PDT: forget its earlier upload
+                if (Test-Path $devFile) { Remove-Item $devFile -Force }
+            } else {
+                $save = [ordered]@{ device = $device; uploadedAt = (Get-Date -Format 'dd.MM.yyyy HH:mm:ss'); rows = $rows }
+                [System.IO.File]::WriteAllText($devFile, ($save | ConvertTo-Json -Depth 6), $Utf8)
+            }
             Rebuild
-            Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items"
+            if ($rows.Count -eq 0) { Log "Removed the upload of $device ($($req.RemoteEndPoint)): nothing counted on the PDT" }
+            else { Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items" }
             Send-Json $ctx @{ ok = $true; rows = $rows.Count }
         }
         elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/email') {
@@ -373,6 +402,21 @@ while ($listener.IsListening) {
                 Send-Html $ctx (Status-Page "All counts cleared. Previous uploads and files are in $dest")
             } else {
                 Send-Html $ctx (Status-Page 'Wrong password, nothing was cleared.')
+            }
+        }
+        elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/remove') {
+            $form = [System.Web.HttpUtility]::ParseQueryString((New-Object System.IO.StreamReader($req.InputStream)).ReadToEnd())
+            $key = Get-Key
+            $file = Join-Path $Data ((Safe-Name ([string]$form['device'])) + '.json')
+            if (-not $key -or $form['key'] -ne $key) { Send-Html $ctx (Status-Page 'Wrong password, nothing was removed.') }
+            elseif (-not $form['device'] -or -not (Test-Path $file)) { Send-Html $ctx (Status-Page 'That PDT has no upload.') }
+            else {
+                $dest = Join-Path $Arch ((Get-Date -Format 'yyyy-MM-dd_HHmmss') + '_removed')
+                New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                Move-Item $file -Destination $dest -Force
+                Rebuild
+                Log "Removed the upload of $($form['device']) from the status page (archived to $dest)"
+                Send-Html $ctx (Status-Page "Removed $($form['device']). Its upload is in $dest")
             }
         }
         elseif ($req.HttpMethod -eq 'GET' -and $path -like '/files/*') {
