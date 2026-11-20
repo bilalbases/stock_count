@@ -861,7 +861,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Start a new count?") },
-            text = { Text("This deletes all ${items.size} items. Export first if you need them.") },
+            text = { Text("This deletes all ${items.size} items on this PDT. Export first if you need them.\n\n" +
+                "Counts already uploaded stay on the server. Only the administrator can clear them on the server.") },
             confirmButton = {
                 TextButton(onClick = { scope.launch { dao.deleteAll() }; confirmClear = false }) {
                     Text("Delete all", color = MaterialTheme.colorScheme.error)
