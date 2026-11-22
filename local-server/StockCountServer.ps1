@@ -2,7 +2,8 @@
   Stock Count - local collector (Windows, no internet needed)
   -----------------------------------------------------------
   The PDTs upload their counts here (app: menu > Upload to server). Each upload REPLACES that
-  device's rows, so corrections are never counted twice. After every upload the server rebuilds
+  device's rows of the same count, so corrections are never counted twice. After "Start new count"
+  on a PDT, its next upload is a new count and its earlier upload is kept (data\devices\<PDT>~<time>.json). After every upload the server rebuilds
   one locked Excel file per branch in the Output folder:
 
       Output\Stock_Count_<year>_<branch>_<sloc>.xlsx (PI template layout, one per storage location)
@@ -294,8 +295,9 @@ function Status-Page([string]$note) {
         $up = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         $branches = (@($up.rows) | ForEach-Object { $_.plant } | Sort-Object -Unique) -join ', '
         $first = (@($up.rows) | Where-Object { $_.scannedMs } | Sort-Object { [long]$_.scannedMs } | Select-Object -First 1).scannedAt
-        $dev += "<tr><td>$(Esc $up.device)</td><td>$(Esc $branches)</td><td>$(@($up.rows).Count)</td><td>$(Esc $first)</td><td>$(Esc $up.uploadedAt)</td></tr>"
-        $opts += "<option value=`"$(Esc $f.BaseName)`">$(Esc $up.device) ($(Esc $branches))</option>"
+        $label = [string]$up.device; if ($f.BaseName -like '*~*') { $label += ' (earlier count)' }
+        $dev += "<tr><td>$(Esc $label)</td><td>$(Esc $branches)</td><td>$(@($up.rows).Count)</td><td>$(Esc $first)</td><td>$(Esc $up.uploadedAt)</td></tr>"
+        $opts += "<option value=`"$(Esc $f.BaseName)`">$(Esc $label) ($(Esc $branches), uploaded $(Esc $up.uploadedAt))</option>"
     }
     if (-not $dev) { $dev = '<tr><td colspan="5">No uploads yet</td></tr>' }
     $remove = ''
@@ -354,16 +356,32 @@ while ($listener.IsListening) {
                 Log "Output folder was empty: started a new count, $($old.Count) earlier uploads archived to $dest"
             }
             $devFile = Join-Path $Data ((Safe-Name $device) + '.json')
-            if ($rows.Count -eq 0) {
-                # Nothing counted on the PDT: forget its earlier upload
-                if (Test-Path $devFile) { Remove-Item $devFile -Force }
-            } else {
+            $kept = ''
+            if ($rows.Count -gt 0) {
+                # A PDT's upload replaces its previous upload only while it is the same count (corrections,
+                # deleted lines). After "Start new count" on the PDT none of the earlier lines are in the
+                # new upload: then the earlier upload is kept as its own file, so it stays in the PI files.
+                if (Test-Path $devFile) {
+                    $prev = Get-Content $devFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $prevKeys = @{}
+                    foreach ($r in @($prev.rows)) { if ($null -ne $r) { $prevKeys[[string]$r.scannedMs + '|' + [string]$r.line] = $true } }
+                    $same = $false
+                    foreach ($r in $rows) { if ($prevKeys.ContainsKey([string]$r.scannedMs + '|' + [string]$r.line)) { $same = $true; break } }
+                    if ($prevKeys.Count -gt 0 -and -not $same) {
+                        $kept = Join-Path $Data ((Safe-Name $device) + '~' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
+                        Move-Item $devFile -Destination $kept -Force
+                    }
+                }
                 $save = [ordered]@{ device = $device; uploadedAt = (Get-Date -Format 'dd.MM.yyyy HH:mm:ss'); rows = $rows }
                 [System.IO.File]::WriteAllText($devFile, ($save | ConvertTo-Json -Depth 6), $Utf8)
             }
+            # An empty upload never removes anything from the server.
             Rebuild
-            if ($rows.Count -eq 0) { Log "Removed the upload of $device ($($req.RemoteEndPoint)): nothing counted on the PDT" }
-            else { Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items" }
+            if ($rows.Count -eq 0) { Log "Empty upload from $device ($($req.RemoteEndPoint)) ignored, nothing removed" }
+            else {
+                Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items"
+                if ($kept) { Log "  New count on $($device): its earlier upload is kept as $(Split-Path -Leaf $kept)" }
+            }
             Send-Json $ctx @{ ok = $true; rows = $rows.Count }
         }
         elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/email') {
@@ -406,7 +424,7 @@ while ($listener.IsListening) {
         elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/remove') {
             $form = [System.Web.HttpUtility]::ParseQueryString((New-Object System.IO.StreamReader($req.InputStream)).ReadToEnd())
             $key = Get-Key
-            $file = Join-Path $Data ((Safe-Name ([string]$form['device'])) + '.json')
+            $file = Join-Path $Data (([string]$form['device'] -replace '[^A-Za-z0-9_~-]', '') + '.json')
             if (-not $key -or $form['key'] -ne $key) { Send-Html $ctx (Status-Page 'Wrong password, nothing was removed.') }
             elseif (-not $form['device'] -or -not (Test-Path $file)) { Send-Html $ctx (Status-Page 'That PDT has no upload.') }
             else {
