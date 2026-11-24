@@ -1,0 +1,4 @@
+StockCount.xcodeproj/
+build/
+*.xcarchive
+StockCount/Info.plist
