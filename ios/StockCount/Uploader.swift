@@ -3,6 +3,7 @@ import UIKit
 
 /// Sends the counted lines to the Stock Count server on the local network (local-server/StockCountServer.ps1).
 /// Each upload carries this device's lines; sending the same count again is safe.
+@MainActor
 enum Uploader {
 
     static let defaultURL = "http://192.168.11.162:8080/upload"

@@ -66,7 +66,7 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbar }
+            .toolbar { toolbarItems }
             .toolbarBackground(brand, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -146,7 +146,7 @@ struct ContentView: View {
 
     // MARK: - Toolbar
 
-    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+    @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .lastTextBaseline, spacing: 4) {

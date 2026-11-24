@@ -26,7 +26,22 @@ jobs:
           echo "Simulator: $SIM"
           xcodebuild test -project ios/StockCount.xcodeproj -scheme StockCount \
             -destination "id=$SIM" CODE_SIGNING_ALLOWED=NO | tail -80
-          exit ${PIPESTATUS[0]}
+          test ${PIPESTATUS[0]} -eq 0
+          echo "SIM=$SIM" >> "$GITHUB_ENV"
+      - name: Screenshot of the app in the simulator
+        continue-on-error: true
+        run: |
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -path '*Debug-iphonesimulator/StockCount.app' -maxdepth 6 | head -1)
+          xcrun simctl boot "$SIM" || true
+          xcrun simctl install "$SIM" "$APP"
+          xcrun simctl launch "$SIM" com.gghl.stockcount
+          sleep 8
+          xcrun simctl io "$SIM" screenshot screenshot.png
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: iphone-screenshot
+          path: screenshot.png
       # TestFlight: needs the App Store Connect API key secrets ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8.
       # Runs on the main branch, or when started by hand (Actions > Build iPhone app > Run workflow).
       - name: Build and upload to TestFlight
