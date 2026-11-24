@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -212,6 +213,37 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     val cloud = remember { CloudUpload.Config(context) }
     var showCloud by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
+    // Result of the last upload. Shown in a dialog that stays until the user taps OK.
+    var uploadResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    fun doUpload() {
+        if (uploading) return
+        uploading = true
+        scope.launch {
+            val raw = dao.allOnce()
+            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            val (list, missing) = withBaseUnits(raw)
+            notify("Uploading to server…")
+            var sent = false
+            val msg = try {
+                val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
+                sent = true
+                "$n items uploaded to the server as ${cloud.device}." + unitWarning(missing)
+            } catch (e: Exception) {
+                if (e is java.io.IOException) "Server not reachable. Check Wi-Fi and that the server PC is on, then upload again."
+                else (e.message ?: "No connection") + "\n\nPlease upload again."
+            }
+            // Keep a copy on this PDT of exactly what was sent, whether the upload worked or not.
+            val copy = withContext(Dispatchers.IO) {
+                XlsxExport.saveUploadCopy(context, branch.trim(), cloud.device, list, sent)
+            }
+            uploading = false
+            snackbar.currentSnackbarData?.dismiss()
+            uploadResult = sent to (msg + "\n\n" + (copy?.let { "Copy saved on this PDT:\n$it" } ?: "⚠ Could not save a copy on this PDT."))
+        }
+    }
+    // Android 9 and older (old PDTs) need permission to save the upload copy in Downloads.
+    // If it is refused, the copy goes to the app's own folder instead, so upload either way.
+    val uploadStoragePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { doUpload() }
     fun uploadToSheet() {
         if (!cloud.isSet) { showCloud = true; return }
         if (uploading) return
@@ -220,21 +252,12 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             notify("Enter Branch ID and Plan date before uploading")
             return
         }
-        uploading = true
-        scope.launch {
-            val raw = dao.allOnce()
-            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
-            val (list, missing) = withBaseUnits(raw)
-            notify("Uploading to server…")
-            val msg = try {
-                val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                "✓ Uploaded $n items to server as ${cloud.device}" + unitWarning(missing)
-            } catch (e: Exception) {
-                if (e is java.io.IOException) "Upload failed: server not reachable. Check Wi-Fi and that the server PC is on."
-                else "Upload failed: ${e.message ?: "no connection"}"
-            }
-            uploading = false
-            notify(msg)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            uploadStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            doUpload()
         }
     }
 
@@ -854,6 +877,21 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
+        )
+    }
+
+    uploadResult?.let { (ok, text) ->
+        AlertDialog(
+            // Stays on screen until OK is tapped (no closing by tapping outside or Back).
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            icon = {
+                if (ok) Icon(Icons.Filled.Check, null, tint = Color(0xFF2E7D32))
+                else Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error)
+            },
+            title = { Text(if (ok) "Uploaded to server" else "Upload failed") },
+            text = { Text(text) },
+            confirmButton = { TextButton(onClick = { uploadResult = null }) { Text("OK") } }
         )
     }
 

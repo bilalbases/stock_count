@@ -181,16 +181,41 @@ object XlsxExport {
     private const val FOLDER = "StockCount"
     private const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    /** Copies [file] to the public Downloads/StockCount folder. Returns the path shown to the user. */
-    private fun saveToDownloads(context: Context, file: File): String {
+    /**
+     * Keeps a copy of exactly what was sent in an upload to the server (every scan line, in the
+     * log layout, locked like the export files) in Downloads/StockCount/Uploads on this PDT, e.g.
+     * UPLOAD_1090_TC21-AB12_2026-11-23_153012_SENT.xlsx (or ..._FAILED.xlsx when the upload failed).
+     * It proves what the PDT sent and when, and can be given to the administrator if the server lacks it.
+     * Returns the path shown to the user, or null if no copy could be saved.
+     */
+    fun saveUploadCopy(context: Context, branch: String, device: String, items: List<Item>, sent: Boolean): String? {
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HHmmss", Locale.US).format(Date())
+        val name = listOf("UPLOAD", branch, device, stamp, if (sent) "SENT" else "FAILED")
+            .filter { it.isNotBlank() }.joinToString("_").replace(Regex("[^A-Za-z0-9._-]"), "-") + ".xlsx"
+        val dir = File(context.cacheDir, "uploads").apply { mkdirs() }
+        val file = File(dir, name)
+        return runCatching {
+            write(file, logRows(branch, items), LOG_HEADERS, LOG_TEXT, LOG_WIDTHS)
+            runCatching { saveToDownloads(context, file, "$FOLDER/Uploads") }.getOrElse {
+                // No access to Downloads (e.g. storage permission refused on an old PDT):
+                // keep it in the app's own folder on the PDT storage instead.
+                val own = File(context.getExternalFilesDir(null) ?: context.filesDir, "Uploads").apply { mkdirs() }
+                file.copyTo(File(own, name), overwrite = true)
+                "Android/data/${context.packageName}/files/Uploads/$name"
+            }
+        }.also { file.delete() }.getOrNull()
+    }
+
+    /** Copies [file] to the public Downloads/StockCount folder (or [folder]). Returns the path shown to the user. */
+    private fun saveToDownloads(context: Context, file: File, folder: String = FOLDER): String {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
                 put(MediaStore.MediaColumns.MIME_TYPE, XLSX)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$folder")
             }
             val resolver = context.contentResolver
-            val relPath = "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER/"
+            val relPath = "${Environment.DIRECTORY_DOWNLOADS}/$folder/"
             // Reuse a file with the same name (same branch and minute) instead of creating "name (1).xlsx".
             val existing = resolver.query(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -205,11 +230,11 @@ object XlsxExport {
         } else {
             // Android 9 and older: needs the storage permission (asked for before exporting).
             @Suppress("DEPRECATION")
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), FOLDER)
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), folder)
             dir.mkdirs()
             file.copyTo(File(dir, file.name), overwrite = true)
         }
-        return "Downloads/$FOLDER/${file.name}"
+        return "Downloads/$folder/${file.name}"
     }
 
     /**
