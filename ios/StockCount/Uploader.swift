@@ -1,9 +1,7 @@
 import Foundation
-import UIKit
 
 /// Sends the counted lines to the Stock Count server on the local network (local-server/StockCountServer.ps1).
 /// Each upload carries this device's lines; sending the same count again is safe.
-@MainActor
 enum Uploader {
 
     static let defaultURL = "http://192.168.11.162:8080/upload"
@@ -29,7 +27,12 @@ enum Uploader {
     }
 
     static func defaultDevice() -> String {
-        let id = UIDevice.current.identifierForVendor?.uuidString.suffix(4).uppercased() ?? "0000"
+        // A random id kept on this iPhone (like the Android ID on the PDTs).
+        let id: String
+        if let saved = UserDefaults.standard.string(forKey: "deviceId") { id = saved } else {
+            id = String(UUID().uuidString.suffix(4)).uppercased()
+            UserDefaults.standard.set(id, forKey: "deviceId")
+        }
         return "iPhone-\(id)".fileSafe
     }
 
