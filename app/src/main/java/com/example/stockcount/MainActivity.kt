@@ -275,20 +275,16 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     }
 
     // ---- Merge several PI export files (offline) ----
+    var mergeResult by remember { mutableStateOf<XlsxExport.MergeResult?>(null) }
     val mergeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val res = withContext(Dispatchers.IO) { XlsxExport.merge(context, uris) }
+                val res = withContext(Dispatchers.IO) {
+                    XlsxExport.merge(context, uris, planDate.trim()) { m, u -> materials.unitInfo(m, u) }
+                }
                 snackbar.currentSnackbarData?.dismiss()
-                val answer = snackbar.showSnackbar(
-                    message = "Merged ${res.files} files (${res.inputRows} rows → ${res.outputRows}). " +
-                        (res.savedTo?.let { "Saved to $it" } ?: "Could not save to Downloads"),
-                    actionLabel = "Share",
-                    withDismissAction = true,
-                    duration = SnackbarDuration.Long
-                )
-                if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFile(context, res.file)
+                mergeResult = res
             } catch (e: Exception) {
                 notify("Merge failed: ${e.message}")
             }
@@ -890,6 +886,27 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                 }
             },
             confirmButton = { TextButton(onClick = { showAbout = false }) { Text("OK") } }
+        )
+    }
+
+    mergeResult?.let { res ->
+        AlertDialog(
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            title = { Text("Files merged") },
+            text = {
+                Text(
+                    "${res.files} files, ${res.inputRows} lines → ${res.outputRows} PI lines in the base unit." +
+                        (if (res.duplicates > 0) "\n${res.duplicates} lines were in more than one file and were counted once." else "") +
+                        "\n\n" + (res.savedTo?.let { "Saved to $it" } ?: "⚠ Could not save to Downloads") +
+                        (if (res.notConverted.isNotEmpty()) "\n\n⚠ Not converted (no base unit in the material list): " +
+                            res.notConverted.take(5).joinToString(", ") + (if (res.notConverted.size > 5) " +${res.notConverted.size - 5} more" else "") +
+                            ". These lines stay in the unit they were counted in." else "") +
+                        (if (res.mixed) "\n\n⚠ You chose PI files and LOG/UPLOAD files together. If they come from the same PDT, its count is added twice." else "")
+                )
+            },
+            confirmButton = { TextButton(onClick = { mergeResult = null }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { XlsxExport.shareFiles(context, res.piFiles); mergeResult = null }) { Text("Share") } }
         )
     }
 
