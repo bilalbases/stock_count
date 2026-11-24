@@ -11,6 +11,11 @@
 
   Open http://<this PC>:8080 in a browser to see which PDTs have uploaded and download the files.
 
+  Finishing one branch: move its PI files (Stock_Count_<year>_<branch>_*.xlsx) out of Output,
+  e.g. into Output\<branch> (move the LOG too if wanted). At the next upload the server closes that branch (written to
+  data\closed_branches.txt): its files are not made again and later uploads for it are ignored.
+  Other branches carry on.
+
   Starting a new count: press "Clear all counts" on that page, or simply delete all files in the
   Output folder. When Output has no Stock_Count files left, the next upload first moves every
   PDT's earlier upload to data\archive, so old branches and dates do not come back.
@@ -26,6 +31,7 @@ $Out    = Join-Path $Here 'Output'
 $LogF   = Join-Path $Here 'server.log'
 $KeyF   = Join-Path $Here 'key.txt'
 $MailF  = Join-Path $Here 'mail.txt'
+$ClosedF = Join-Path $Here 'data\closed_branches.txt'
 $Inv    = [System.Globalization.CultureInfo]::InvariantCulture
 $Utf8   = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName System.IO.Compression
@@ -138,7 +144,36 @@ function Write-Xlsx([string]$path, $header, $rows, $textCols = @(6), $widths = @
 }
 
 # Rebuilds Output\Stock_Count_<year>_<branch>_<sloc>.xlsx from all device uploads.
+# Closed branches (one per line in data\closed_branches.txt): their counts stay stored but no
+# files are made for them any more. A branch is closed when its files are moved out of Output.
+function Get-Closed {
+    if (Test-Path $ClosedF) { @(Get-Content $ClosedF | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
+}
+function Is-BranchFile([string]$name, [string]$plant) {
+    $b = [regex]::Escape((Safe-Name $plant))
+    ($name -match ('^Stock_Count_\d{4}_' + $b + '_.+\.xlsx$')) -or ($name -match ('^Stock_Count_Log_\d{4}_' + $b + '\.xlsx$'))
+}
+function Close-MovedBranches {
+    $closed = @(Get-Closed)
+    $plants = @{}
+    foreach ($f in Get-ChildItem -Path $Data -Filter *.json) {
+        $up = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($r in @($up.rows)) { if ($null -ne $r -and $r.plant) { $plants[[string]$r.plant] = $true } }
+    }
+    $names = @(Get-ChildItem -Path $Out -Filter 'Stock_Count_*.xlsx' | ForEach-Object { $_.Name })
+    foreach ($plant in $plants.Keys) {
+        if ($closed -contains $plant) { continue }
+        $b = [regex]::Escape((Safe-Name $plant))
+        $has = @($names | Where-Object { $_ -match ('^Stock_Count_\d{4}_' + $b + '_.+\.xlsx$') })
+        if ($has.Count -eq 0) {
+            Add-Content -Path $ClosedF -Value $plant -Encoding ASCII
+            Log "Branch $plant closed: its files were moved out of Output. Its uploads are ignored from now on."
+        }
+    }
+}
+
 function Rebuild {
+    $closed = @(Get-Closed)
     $now = Get-Date
     $today = $now.ToString('dd.MM.yyyy'); $year = $now.ToString('yyyy')
     $plants = @{}
@@ -147,6 +182,7 @@ function Rebuild {
         foreach ($r in @($up.rows)) {
             if ($null -eq $r) { continue }
             $plant = [string]$r.plant
+            if ($closed -contains $plant) { continue }
             if (-not $plants.ContainsKey($plant)) { $plants[$plant] = @{ plan = ''; groups = [ordered]@{}; log = New-Object System.Collections.ArrayList } }
             $p = $plants[$plant]
             if (-not $p.plan -and $r.planDate) { $p.plan = [string]$r.planDate }
@@ -202,7 +238,7 @@ function Rebuild {
     }
     # Remove files of branches that no longer have counts
     foreach ($f in Get-ChildItem -Path $Out -Filter 'Stock_Count_*.xlsx') {
-        if ($written -notcontains $f.Name) { try { Remove-Item $f.FullName -Force } catch {} }
+        if ($written -notcontains $f.Name -and -not @($closed | Where-Object { Is-BranchFile $f.Name $_ }).Count) { try { Remove-Item $f.FullName -Force } catch {} }
     }
 }
 
@@ -310,6 +346,9 @@ function Status-Page([string]$note) {
         $files += "<li><a href=`"/files/$([uri]::EscapeDataString($f.Name))`">$(Esc $f.Name)</a> <small>($($f.LastWriteTime.ToString('dd.MM.yyyy HH:mm')))</small></li>"
     }
     if (-not $files) { $files = '<li>No files yet</li>' }
+    $closedNote = ''
+    $cl = @(Get-Closed)
+    if ($cl.Count -gt 0) { $closedNote = "<p><b>Closed branches</b> (files moved out of Output, new uploads ignored): $(Esc ($cl -join ', '))<br><small>To count one again, delete its line in data\closed_branches.txt. Clear all counts reopens all.</small></p>" }
     $msg = ''; if ($note) { $msg = "<p class=`"note`">$(Esc $note)</p>" }
     return @"
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -320,6 +359,7 @@ li{margin:6px 0}a{color:#2E358F;font-weight:600}.note{background:#e8f5e9;padding
 form{margin-top:28px;padding:12px;border:1px solid #f0c0c0;border-radius:6px;background:#fff8f8}small{color:#777}</style></head><body>
 <h1>Stock Count server</h1><small>Updated $(Get-Date -Format 'dd.MM.yyyy HH:mm:ss') &middot; refreshes every 30 s</small>$msg
 <h2>PI files (one per branch)</h2><ul>$files</ul>
+$closedNote
 <h2>Uploads</h2><table><tr><th>Device</th><th>Branch</th><th>Items</th><th>First scan</th><th>Last upload</th></tr>$dev</table>
 $remove
 <form method="post" action="/clear"><b>Start a new count</b><br><small>Moves all uploads and files to data\archive (nothing is deleted). Deleting all files in the Output folder does the same at the next upload.</small><br><br>
@@ -354,6 +394,9 @@ while ($listener.IsListening) {
                 New-Item -ItemType Directory -Force -Path $dest | Out-Null
                 $old | Move-Item -Destination $dest -Force
                 Log "Output folder was empty: started a new count, $($old.Count) earlier uploads archived to $dest"
+                if (Test-Path $ClosedF) { Move-Item $ClosedF -Destination $dest -Force }
+            } else {
+                Close-MovedBranches
             }
             $devFile = Join-Path $Data ((Safe-Name $device) + '.json')
             $kept = ''
@@ -414,6 +457,7 @@ while ($listener.IsListening) {
                 $dest = Join-Path $Arch (Get-Date -Format 'yyyy-MM-dd_HHmmss')
                 New-Item -ItemType Directory -Force -Path $dest | Out-Null
                 Get-ChildItem -Path $Data | Move-Item -Destination $dest -Force
+                if (Test-Path $ClosedF) { Move-Item $ClosedF -Destination $dest -Force }
                 Get-ChildItem -Path $Out -Filter *.xlsx | Move-Item -Destination $dest -Force
                 Log "All counts cleared (archived to $dest)"
                 Send-Html $ctx (Status-Page "All counts cleared. Previous uploads and files are in $dest")

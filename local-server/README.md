@@ -15,6 +15,10 @@ locked Excel file per branch and storage location in the PI template layout: `Ou
   download the Excel files (they are also in the `Output` folder).
 - New count: on that page, **Clear all counts** (password needed). Old uploads and files are
   moved to `data\archive`, nothing is deleted.
+- Finish one branch while others carry on: move its PI files (`Stock_Count_<year>_<branch>_*.xlsx`)
+  out of `Output`, e.g. into `Output\<branch>`. At the next upload the server closes that branch
+  (`data\closed_branches.txt`): its files are not made again and later uploads for it are ignored.
+  To count it again, delete its line in that file. Clear all counts reopens all branches.
 - Or simply delete all files in the `Output` folder: the next upload then archives every PDT's
   earlier upload first, so old branches, storage locations and dates do not come back.
 - "Start new count" on a PDT does not remove anything from the server: its next upload is kept as
