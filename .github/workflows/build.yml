@@ -18,6 +18,16 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - name: Check the server script parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/local-server/StockCountServer.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { Write-Host $_ }; exit 1 }
+      - name: Server smoke test (two PDTs upload at once)
+        continue-on-error: true
+        shell: pwsh
+        run: ./.github/scripts/server-smoke.ps1
       - run: chmod +x gradlew && ./gradlew assembleDebug
         env:
           SHEET_URL: ${{ secrets.SHEET_URL }}

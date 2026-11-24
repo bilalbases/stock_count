@@ -20,11 +20,17 @@
   Output folder. When Output has no Stock_Count files left, the next upload first moves every
   PDT's earlier upload to data\archive, so old branches and dates do not come back.
 
+  Uploads are answered at once: each upload is saved in data\inbox and the PDT gets "uploaded"
+  within a second or two. A background worker then files the uploads and rebuilds the Excel files,
+  once for all uploads that arrived together, so many PDTs can upload at the same time.
+
   Install once with Install.cmd (runs as administrator). It starts automatically with Windows.
 #>
+param([switch]$Worker, [string]$Root)
 
 $Port   = 8080
-$Here   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptPath = $MyInvocation.MyCommand.Path
+$Here   = if ($Root) { $Root } else { Split-Path -Parent $ScriptPath }
 $Data   = Join-Path $Here 'data\devices'
 $Arch   = Join-Path $Here 'data\archive'
 $Out    = Join-Path $Here 'Output'
@@ -32,12 +38,16 @@ $LogF   = Join-Path $Here 'server.log'
 $KeyF   = Join-Path $Here 'key.txt'
 $MailF  = Join-Path $Here 'mail.txt'
 $ClosedF = Join-Path $Here 'data\closed_branches.txt'
+$Inbox  = Join-Path $Here 'data\inbox'        # uploads received, not yet filed (the worker files them)
+$Failed = Join-Path $Here 'data\failed'       # uploads that could not be filed (kept for checking)
+$CacheF = Join-Path $Here 'data\status_cache.txt'
+$FlagF  = Join-Path $Here 'data\rebuild.flag'  # asks the worker to rebuild the files
 $Inv    = [System.Globalization.CultureInfo]::InvariantCulture
 $Utf8   = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.Web
-foreach ($d in @($Data, $Arch, $Out)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+foreach ($d in @($Data, $Arch, $Out, $Inbox, $Failed)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 if (-not (Test-Path $MailF)) {
     # Mail settings for "Email PI file to inventory officer" (app menu). Fill in and save; no restart needed.
     @(
@@ -57,9 +67,16 @@ if (-not (Test-Path $MailF)) {
 }
 
 function Log($msg) {
-    $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $msg
-    Add-Content -Path $LogF -Value $line -Encoding UTF8
+    $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $msg + "`r`n"
+    # The web server and the worker both write here: retry if the other one has the file open.
+    for ($i = 0; $i -lt 5; $i++) {
+        try { [System.IO.File]::AppendAllText($LogF, $line, $Utf8); return } catch { Start-Sleep -Milliseconds 100 }
+    }
 }
+# Only one of the web server and the worker may change the stored uploads at a time.
+$DataLock = New-Object System.Threading.Mutex($false, 'StockCountServerData')
+function Lock-Data { try { [void]$DataLock.WaitOne() } catch [System.Threading.AbandonedMutexException] {} }
+function Unlock-Data { try { $DataLock.ReleaseMutex() } catch {} }
 function Get-Key { if (Test-Path $KeyF) { (Get-Content $KeyF -Raw).Trim() } else { '' } }
 function Esc([string]$s) {
     if ($null -eq $s) { return '' }
@@ -261,7 +278,7 @@ function Send-PiMail([string]$branch, [string]$device) {
     if (-not $m.SMTP_HOST) { throw 'No SMTP_HOST in mail.txt on the server' }
     $from = $m.FROM; if (-not $from) { $from = $m.SMTP_USER }
     if (-not $from) { throw 'No FROM address in mail.txt on the server' }
-    Rebuild
+    # The worker keeps the files up to date; no rebuild here (it would block other uploads).
     $year = (Get-Date).ToString('yyyy')
     $safe = Safe-Name $branch
     $file = Join-Path $Out ('Stock_Count_' + $year + '_' + $safe + '.xlsx')
@@ -325,7 +342,9 @@ function Send($ctx, [int]$code, [string]$type, $bytes) {
 function Send-Json($ctx, $obj, [int]$code = 200) { Send $ctx $code 'application/json; charset=utf-8' ($Utf8.GetBytes(($obj | ConvertTo-Json -Compress))) }
 function Send-Html($ctx, [string]$html) { Send $ctx 200 'text/html; charset=utf-8' ($Utf8.GetBytes($html)) }
 
-function Status-Page([string]$note) {
+# Table of uploads for the status page. Reading every upload is slow, so the worker builds it
+# after each rebuild and the page only reads the result.
+function Build-StatusCache {
     $dev = ''; $opts = ''
     foreach ($f in (Get-ChildItem -Path $Data -Filter *.json | Sort-Object LastWriteTime -Descending)) {
         $up = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -335,7 +354,18 @@ function Status-Page([string]$note) {
         $dev += "<tr><td>$(Esc $label)</td><td>$(Esc $branches)</td><td>$(@($up.rows).Count)</td><td>$(Esc $first)</td><td>$(Esc $up.uploadedAt)</td></tr>"
         $opts += "<option value=`"$(Esc $f.BaseName)`">$(Esc $label) ($(Esc $branches), uploaded $(Esc $up.uploadedAt))</option>"
     }
+    [System.IO.File]::WriteAllText($CacheF, $dev + "`n<!--OPTIONS-->`n" + $opts, $Utf8)
+}
+
+function Status-Page([string]$note) {
+    $dev = ''; $opts = ''
+    if (Test-Path $CacheF) {
+        $parts = ([System.IO.File]::ReadAllText($CacheF, $Utf8)) -split "`n<!--OPTIONS-->`n", 2
+        $dev = $parts[0]; if ($parts.Count -gt 1) { $opts = $parts[1] }
+    }
     if (-not $dev) { $dev = '<tr><td colspan="5">No uploads yet</td></tr>' }
+    $waiting = @(Get-ChildItem -Path $Inbox -Filter *.json).Count
+    if ($waiting -gt 0) { $dev = "<tr><td colspan=`"5`"><b>$waiting new upload(s) received, being added to the files now...</b></td></tr>" + $dev }
     $remove = ''
     if ($opts) {
         $remove = "<form method=`"post`" action=`"/remove`"><b>Remove one PDT's upload</b><br><small>For a PDT with old or wrong counts. Its upload is moved to data\archive.</small><br><br>" +
@@ -368,24 +398,14 @@ Password: <input type="password" name="key"> <button type="submit">Clear all cou
 "@
 }
 
-$listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add("http://+:$Port/")
-$listener.Start()
-Log "Server started on port $Port"
-
-while ($listener.IsListening) {
-    $ctx = $listener.GetContext()
+# ---- Worker: files the received uploads and rebuilds the Excel files (runs in the background) ----
+function Process-Inbox {
+    $files = @(Get-ChildItem -Path $Inbox -Filter *.json | Sort-Object Name)
+    if ($files.Count -eq 0 -and -not (Test-Path $FlagF)) { return }
+    if (Test-Path $FlagF) { Remove-Item $FlagF -Force -ErrorAction SilentlyContinue }
+    Lock-Data
     try {
-        $req = $ctx.Request
-        $path = $req.Url.AbsolutePath.TrimEnd('/')
-        if ($req.HttpMethod -eq 'POST' -and ($path -eq '/upload' -or $path -eq '')) {
-            $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
-            $body = $reader.ReadToEnd() | ConvertFrom-Json
-            $key = Get-Key
-            if (-not $key -or [string]$body.key -ne $key) { Send-Json $ctx @{ ok = $false; error = 'Wrong key' }; Log "Rejected upload from $($req.RemoteEndPoint): wrong key"; continue }
-            $device = ([string]$body.device).Trim()
-            if (-not $device) { Send-Json $ctx @{ ok = $false; error = 'Missing device name' }; continue }
-            $rows = @(); if ($null -ne $body.rows) { $rows = @(@($body.rows) | Where-Object { $null -ne $_ }) }
+        if ($files.Count -gt 0) {
             # Output emptied by hand (all PI/LOG files deleted) = a new count: archive all earlier uploads
             # first, otherwise the other PDTs' old uploads would rebuild the deleted files.
             $old = @(Get-ChildItem -Path $Data -Filter *.json)
@@ -398,12 +418,18 @@ while ($listener.IsListening) {
             } else {
                 Close-MovedBranches
             }
-            $devFile = Join-Path $Data ((Safe-Name $device) + '.json')
-            $kept = ''
-            if ($rows.Count -gt 0) {
+        }
+        foreach ($f in $files) {
+            try {
+                $text = [System.IO.File]::ReadAllText($f.FullName, $Utf8)
+                $up = $text | ConvertFrom-Json
+                $device = ([string]$up.device).Trim()
+                $rows = @(@($up.rows) | Where-Object { $null -ne $_ })
+                $devFile = Join-Path $Data ((Safe-Name $device) + '.json')
                 # A PDT's upload replaces its previous upload only while it is the same count (corrections,
                 # deleted lines). After "Start new count" on the PDT none of the earlier lines are in the
                 # new upload: then the earlier upload is kept as its own file, so it stays in the PI files.
+                $kept = ''
                 if (Test-Path $devFile) {
                     $prev = Get-Content $devFile -Raw -Encoding UTF8 | ConvertFrom-Json
                     $prevKeys = @{}
@@ -415,17 +441,84 @@ while ($listener.IsListening) {
                         Move-Item $devFile -Destination $kept -Force
                     }
                 }
-                $save = [ordered]@{ device = $device; uploadedAt = (Get-Date -Format 'dd.MM.yyyy HH:mm:ss'); rows = $rows }
-                [System.IO.File]::WriteAllText($devFile, ($save | ConvertTo-Json -Depth 6), $Utf8)
-            }
-            # An empty upload never removes anything from the server.
-            Rebuild
-            if ($rows.Count -eq 0) { Log "Empty upload from $device ($($req.RemoteEndPoint)) ignored, nothing removed" }
-            else {
-                Log "Upload from $device ($($req.RemoteEndPoint)): $($rows.Count) items"
+                Move-Item $f.FullName -Destination $devFile -Force
                 if ($kept) { Log "  New count on $($device): its earlier upload is kept as $(Split-Path -Leaf $kept)" }
+            } catch {
+                Log "Could not file upload $($f.Name): $($_.Exception.Message). It is kept in data\failed"
+                try { Move-Item $f.FullName -Destination $Failed -Force } catch {}
             }
-            Send-Json $ctx @{ ok = $true; rows = $rows.Count }
+        }
+        $t = [System.Diagnostics.Stopwatch]::StartNew()
+        Rebuild
+        Build-StatusCache
+        if ($files.Count -gt 0) { Log "Files updated with $($files.Count) upload(s) in $([int]$t.Elapsed.TotalSeconds) s" }
+    } finally { Unlock-Data }
+}
+
+if ($Worker) {
+    Log 'Worker started'
+    try { Lock-Data; try { Build-StatusCache } finally { Unlock-Data } } catch { Log "Worker: $($_.Exception.Message)" }
+    while ($true) {
+        try { Process-Inbox } catch { Log "Worker error: $($_.Exception.Message)" }
+        Start-Sleep -Seconds 2
+    }
+    return
+}
+
+# Runs the worker inside this process, in the background. Restarted if it ever stops.
+function Start-Worker {
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript([System.IO.File]::ReadAllText($ScriptPath)).AddParameter('Worker', $true).AddParameter('Root', $Here)
+    $script:WorkerPs = $ps
+    $script:WorkerRun = $ps.BeginInvoke()
+}
+Start-Worker
+
+$listener = New-Object System.Net.HttpListener
+$listener.Prefixes.Add("http://+:$Port/")
+$listener.Start()
+Log "Server started on port $Port"
+
+$pending = $listener.BeginGetContext($null, $null)
+while ($listener.IsListening) {
+    if (-not $pending.AsyncWaitHandle.WaitOne(5000)) {
+        if ($WorkerRun.IsCompleted) {
+            $err = ($WorkerPs.Streams.Error | Select-Object -Last 1)
+            Log "Worker stopped ($err), starting it again"
+            try { $WorkerPs.Dispose() } catch {}
+            Start-Worker
+        }
+        continue
+    }
+    $ctx = $listener.EndGetContext($pending)
+    $pending = $listener.BeginGetContext($null, $null)
+    try {
+        $req = $ctx.Request
+        $path = $req.Url.AbsolutePath.TrimEnd('/')
+        if ($req.HttpMethod -eq 'POST' -and ($path -eq '/upload' -or $path -eq '')) {
+            $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
+            $text = $reader.ReadToEnd()
+            $body = $text | ConvertFrom-Json
+            $key = Get-Key
+            if (-not $key -or [string]$body.key -ne $key) { Send-Json $ctx @{ ok = $false; error = 'Wrong key' }; Log "Rejected upload from $($req.RemoteEndPoint): wrong key"; continue }
+            $device = ([string]$body.device).Trim()
+            if (-not $device) { Send-Json $ctx @{ ok = $false; error = 'Missing device name' }; continue }
+            $count = 0; if ($null -ne $body.rows) { $count = @(@($body.rows) | Where-Object { $null -ne $_ }).Count }
+            # An empty upload never removes anything from the server.
+            if ($count -eq 0) {
+                Log "Empty upload from $device ($($req.RemoteEndPoint)) ignored, nothing removed"
+                Send-Json $ctx @{ ok = $true; rows = 0 }; continue
+            }
+            # Save it as received (the password replaced by the upload time) and answer at once;
+            # the worker files it and updates the Excel files in the background.
+            $rx = New-Object System.Text.RegularExpressions.Regex('"key"\s*:\s*"(?:[^"\\]|\\.)*"')
+            $text = $rx.Replace($text, '"uploadedAt":"' + (Get-Date -Format 'dd.MM.yyyy HH:mm:ss') + '"', 1)
+            $name = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '_' + (Safe-Name $device)
+            $tmp = Join-Path $Inbox ($name + '.tmp')
+            [System.IO.File]::WriteAllText($tmp, $text, $Utf8)
+            Move-Item $tmp -Destination (Join-Path $Inbox ($name + '.json')) -Force
+            Log "Upload from $device ($($req.RemoteEndPoint)): $count items"
+            Send-Json $ctx @{ ok = $true; rows = $count }
         }
         elseif ($req.HttpMethod -eq 'POST' -and $path -eq '/email') {
             $reader = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
@@ -456,9 +549,14 @@ while ($listener.IsListening) {
             if ($key -and $form['key'] -eq $key) {
                 $dest = Join-Path $Arch (Get-Date -Format 'yyyy-MM-dd_HHmmss')
                 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-                Get-ChildItem -Path $Data | Move-Item -Destination $dest -Force
-                if (Test-Path $ClosedF) { Move-Item $ClosedF -Destination $dest -Force }
-                Get-ChildItem -Path $Out -Filter *.xlsx | Move-Item -Destination $dest -Force
+                Lock-Data
+                try {
+                    Get-ChildItem -Path $Data | Move-Item -Destination $dest -Force
+                    Get-ChildItem -Path $Inbox -Filter *.json | Move-Item -Destination $dest -Force
+                    if (Test-Path $ClosedF) { Move-Item $ClosedF -Destination $dest -Force }
+                    Get-ChildItem -Path $Out -Filter *.xlsx | Move-Item -Destination $dest -Force
+                    if (Test-Path $CacheF) { Remove-Item $CacheF -Force }
+                } finally { Unlock-Data }
                 Log "All counts cleared (archived to $dest)"
                 Send-Html $ctx (Status-Page "All counts cleared. Previous uploads and files are in $dest")
             } else {
@@ -474,10 +572,11 @@ while ($listener.IsListening) {
             else {
                 $dest = Join-Path $Arch ((Get-Date -Format 'yyyy-MM-dd_HHmmss') + '_removed')
                 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-                Move-Item $file -Destination $dest -Force
-                Rebuild
+                Lock-Data
+                try { Move-Item $file -Destination $dest -Force } finally { Unlock-Data }
+                New-Item -ItemType File -Force -Path $FlagF | Out-Null   # the worker updates the files
                 Log "Removed the upload of $($form['device']) from the status page (archived to $dest)"
-                Send-Html $ctx (Status-Page "Removed $($form['device']). Its upload is in $dest")
+                Send-Html $ctx (Status-Page "Removed $($form['device']). Its upload is in $dest. The files are updated in a minute or two.")
             }
         }
         elseif ($req.HttpMethod -eq 'GET' -and $path -like '/files/*') {

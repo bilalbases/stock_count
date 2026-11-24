@@ -222,15 +222,28 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             val raw = dao.allOnce()
             if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
             val (list, missing) = withBaseUnits(raw)
-            notify("Uploading to server…")
             var sent = false
-            val msg = try {
-                val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                sent = true
-                "$n items uploaded to the server as ${cloud.device}." + unitWarning(missing)
-            } catch (e: Exception) {
-                if (e is java.io.IOException) "Server not reachable. Check Wi-Fi and that the server PC is on, then upload again."
-                else (e.message ?: "No connection") + "\n\nPlease upload again."
+            var msg = ""
+            // A busy server or a Wi-Fi hiccup: try up to 3 times before reporting a failure.
+            // Sending the same count again is safe: the server replaces this PDT's earlier upload.
+            for (attempt in 1..3) {
+                snackbar.currentSnackbarData?.dismiss()
+                scope.launch {
+                    snackbar.showSnackbar(
+                        if (attempt == 1) "Uploading ${list.size} lines to server…" else "Trying again ($attempt of 3)…",
+                        duration = SnackbarDuration.Indefinite
+                    )
+                }
+                try {
+                    val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
+                    sent = true
+                    msg = "$n items uploaded to the server as ${cloud.device}." + unitWarning(missing)
+                    break
+                } catch (e: Exception) {
+                    msg = CloudUpload.describe(e) + (if (attempt > 1) "\n\n(Tried $attempt times.)" else "")
+                    if (!CloudUpload.retryable(e) || attempt == 3) break
+                    kotlinx.coroutines.delay(5000L * attempt)
+                }
             }
             // Keep a copy on this PDT of exactly what was sent, whether the upload worked or not.
             val copy = withContext(Dispatchers.IO) {

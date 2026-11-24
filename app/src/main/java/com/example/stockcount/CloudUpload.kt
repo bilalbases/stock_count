@@ -40,6 +40,32 @@ object CloudUpload {
         return "${Build.MODEL}-$id".replace(Regex("[^A-Za-z0-9_-]"), "")
     }
 
+    /** How long to wait for the server's answer (a busy server answers late, not never). */
+    private const val READ_TIMEOUT = 5 * 60 * 1000
+
+    /** The server answered with an error (wrong key etc.): trying again will not help. */
+    class ServerError(message: String) : Exception(message)
+
+    /** Worth trying again at once? Not after a server error or a 5-minute wait for a busy server. */
+    fun retryable(e: Throwable): Boolean = when (e) {
+        is ServerError -> false
+        is java.net.SocketTimeoutException -> e.message.orEmpty().contains("connect", true)
+        else -> e is java.io.IOException
+    }
+
+    /** Plain-language reason for a failed upload. */
+    fun describe(e: Throwable): String = when (e) {
+        is ServerError -> "The server answered: ${e.message}"
+        is java.net.SocketTimeoutException ->
+            if (e.message.orEmpty().contains("connect", true))
+                "No answer from the server PC. Check that the PDT is on the store Wi-Fi and that the server PC is on."
+            else "The server is busy and did not answer in 5 minutes. Your count is safe on this PDT. Wait a few minutes, then upload again."
+        is java.net.ConnectException, is java.net.NoRouteToHostException, is java.net.UnknownHostException ->
+            "Server not reachable. Check that the PDT is on the store Wi-Fi and that the server PC is on."
+        is java.io.IOException -> "Connection lost during the upload (${e.javaClass.simpleName}${e.message?.let { ": $it" } ?: ""}). Check Wi-Fi, then upload again."
+        else -> e.message ?: e.javaClass.simpleName
+    }
+
     /** Uploads all items. Returns the number of rows the Sheet received. Throws on failure. */
     fun upload(config: Config, planDate: String, branch: String, items: List<Item>): Int {
         val rows = JSONArray()
@@ -76,8 +102,8 @@ object CloudUpload {
             requestMethod = "POST"
             doOutput = true
             instanceFollowRedirects = false
-            connectTimeout = 10000
-            readTimeout = 60000
+            connectTimeout = 15000
+            readTimeout = READ_TIMEOUT
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
         }
         post.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
@@ -87,7 +113,7 @@ object CloudUpload {
             val location = post.getHeaderField("Location") ?: error("Upload failed (redirect without location)")
             post.disconnect()
             val get = (URL(location).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10000; readTimeout = 60000
+                connectTimeout = 15000; readTimeout = READ_TIMEOUT
             }
             code = get.responseCode
             text = (if (code < 400) get.inputStream else get.errorStream)?.bufferedReader()?.readText().orEmpty()
@@ -96,10 +122,10 @@ object CloudUpload {
             text = (if (code < 400) post.inputStream else post.errorStream)?.bufferedReader()?.readText().orEmpty()
             post.disconnect()
         }
-        if (code >= 400) error("Upload failed (HTTP $code)")
         val json = runCatching { JSONObject(text) }.getOrNull()
-            ?: error("Unexpected answer from the server. Check the URL in Upload settings.")
-        if (!json.optBoolean("ok")) error(json.optString("error", "Upload failed"))
+        if (json != null && !json.optBoolean("ok")) throw ServerError(json.optString("error", "Upload failed"))
+        if (code >= 400) throw java.io.IOException("server error HTTP $code")
+        if (json == null) throw ServerError("unexpected answer. Check the URL in Upload settings.")
         return json.optInt("rows", items.size)
     }
 }
