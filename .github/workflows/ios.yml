@@ -1,0 +1,62 @@
+name: Build iPhone app
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+      - name: Build and run the tests (simulator, no signing)
+        run: |
+          SIM=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "Simulator: $SIM"
+          xcodebuild test -project ios/StockCount.xcodeproj -scheme StockCount \
+            -destination "id=$SIM" CODE_SIGNING_ALLOWED=NO | tail -80
+          test ${PIPESTATUS[0]} -eq 0
+          echo "SIM=$SIM" >> "$GITHUB_ENV"
+      - name: Screenshot of the app in the simulator
+        continue-on-error: true
+        run: |
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -path '*Debug-iphonesimulator/StockCount.app' -maxdepth 6 | head -1)
+          xcrun simctl boot "$SIM" || true
+          xcrun simctl install "$SIM" "$APP"
+          xcrun simctl launch "$SIM" com.gghl.stockcount
+          sleep 8
+          xcrun simctl io "$SIM" screenshot screenshot.png
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: iphone-screenshot
+          path: screenshot.png
+      # TestFlight: needs the App Store Connect API key secrets ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8.
+      # Runs on the main branch, or when started by hand (Actions > Build iPhone app > Run workflow).
+      - name: Build and upload to TestFlight
+        if: env.ASC_KEY_ID != '' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          UPLOAD_KEY: ${{ secrets.SHEET_KEY }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH"
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          xcodebuild archive -project ios/StockCount.xcodeproj -scheme StockCount \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/StockCount.xcarchive" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} UPLOAD_KEY="$UPLOAD_KEY" "${AUTH[@]}" | tail -40
+          test ${PIPESTATUS[0]} -eq 0
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/StockCount.xcarchive" \
+            -exportOptionsPlist ios/ExportOptions.plist -exportPath "$RUNNER_TEMP/export" "${AUTH[@]}"
+          rm -f "$KEY_PATH"

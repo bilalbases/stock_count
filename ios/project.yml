@@ -1,0 +1,65 @@
+name: StockCount
+options:
+  bundleIdPrefix: com.gghl
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.48"          # same version name as the Android app
+    CURRENT_PROJECT_VERSION: "1"       # build number, set by GitHub Actions
+    DEVELOPMENT_TEAM: VHHDYMZ4GY
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    UPLOAD_KEY: ""                     # server key, filled in by GitHub Actions from the SHEET_KEY secret
+targets:
+  StockCount:
+    type: application
+    platform: iOS
+    sources:
+      - path: StockCount
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gghl.stockcount
+        PRODUCT_NAME: StockCount
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: StockCount/Info.plist
+      properties:
+        CFBundleDisplayName: Stock Count
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
+        NSCameraUsageDescription: The camera is used to scan barcodes while counting stock.
+        NSLocalNetworkUsageDescription: Counts are uploaded to the Stock Count server on the store network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true      # the store server is plain http on the local network
+          NSAllowsLocalNetworking: true
+        UIFileSharingEnabled: true          # exported files show in Files > On My iPhone > Stock Count
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
+        UploadKey: $(UPLOAD_KEY)
+  StockCountTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: StockCountTests
+    dependencies:
+      - target: StockCount
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gghl.stockcount.tests
+schemes:
+  StockCount:
+    build:
+      targets:
+        StockCount: all
+        StockCountTests: [test]
+    test:
+      targets: [StockCountTests]
