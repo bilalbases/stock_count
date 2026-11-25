@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -212,6 +213,50 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     val cloud = remember { CloudUpload.Config(context) }
     var showCloud by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
+    // Result of the last upload. Shown in a dialog that stays until the user taps OK.
+    var uploadResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    fun doUpload() {
+        if (uploading) return
+        uploading = true
+        scope.launch {
+            val raw = dao.allOnce()
+            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            val (list, missing) = withBaseUnits(raw)
+            var sent = false
+            var msg = ""
+            // A busy server or a Wi-Fi hiccup: try up to 3 times before reporting a failure.
+            // Sending the same count again is safe: the server replaces this PDT's earlier upload.
+            for (attempt in 1..3) {
+                snackbar.currentSnackbarData?.dismiss()
+                scope.launch {
+                    snackbar.showSnackbar(
+                        if (attempt == 1) "Uploading ${list.size} lines to server…" else "Trying again ($attempt of 3)…",
+                        duration = SnackbarDuration.Indefinite
+                    )
+                }
+                try {
+                    val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
+                    sent = true
+                    msg = "$n items uploaded to the server as ${cloud.device}." + unitWarning(missing)
+                    break
+                } catch (e: Exception) {
+                    msg = CloudUpload.describe(e) + (if (attempt > 1) "\n\n(Tried $attempt times.)" else "")
+                    if (!CloudUpload.retryable(e) || attempt == 3) break
+                    kotlinx.coroutines.delay(5000L * attempt)
+                }
+            }
+            // Keep a copy on this PDT of exactly what was sent, whether the upload worked or not.
+            val copy = withContext(Dispatchers.IO) {
+                XlsxExport.saveUploadCopy(context, branch.trim(), cloud.device, list, sent)
+            }
+            uploading = false
+            snackbar.currentSnackbarData?.dismiss()
+            uploadResult = sent to (msg + "\n\n" + (copy?.let { "Copy saved on this PDT:\n$it" } ?: "⚠ Could not save a copy on this PDT."))
+        }
+    }
+    // Android 9 and older (old PDTs) need permission to save the upload copy in Downloads.
+    // If it is refused, the copy goes to the app's own folder instead, so upload either way.
+    val uploadStoragePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { doUpload() }
     fun uploadToSheet() {
         if (!cloud.isSet) { showCloud = true; return }
         if (uploading) return
@@ -220,39 +265,26 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             notify("Enter Branch ID and Plan date before uploading")
             return
         }
-        uploading = true
-        scope.launch {
-            val raw = dao.allOnce()
-            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
-            val (list, missing) = withBaseUnits(raw)
-            notify("Uploading to server…")
-            val msg = try {
-                val n = withContext(Dispatchers.IO) { CloudUpload.upload(cloud, planDate.trim(), branch.trim(), list) }
-                "✓ Uploaded $n items to server as ${cloud.device}" + unitWarning(missing)
-            } catch (e: Exception) {
-                if (e is java.io.IOException) "Upload failed: server not reachable. Check Wi-Fi and that the server PC is on."
-                else "Upload failed: ${e.message ?: "no connection"}"
-            }
-            uploading = false
-            notify(msg)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            uploadStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            doUpload()
         }
     }
 
     // ---- Merge several PI export files (offline) ----
+    var mergeResult by remember { mutableStateOf<XlsxExport.MergeResult?>(null) }
     val mergeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val res = withContext(Dispatchers.IO) { XlsxExport.merge(context, uris) }
+                val res = withContext(Dispatchers.IO) {
+                    XlsxExport.merge(context, uris, planDate.trim()) { m, u -> materials.unitInfo(m, u) }
+                }
                 snackbar.currentSnackbarData?.dismiss()
-                val answer = snackbar.showSnackbar(
-                    message = "Merged ${res.files} files (${res.inputRows} rows → ${res.outputRows}). " +
-                        (res.savedTo?.let { "Saved to $it" } ?: "Could not save to Downloads"),
-                    actionLabel = "Share",
-                    withDismissAction = true,
-                    duration = SnackbarDuration.Long
-                )
-                if (answer == SnackbarResult.ActionPerformed) XlsxExport.shareFile(context, res.file)
+                mergeResult = res
             } catch (e: Exception) {
                 notify("Merge failed: ${e.message}")
             }
@@ -857,11 +889,48 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         )
     }
 
+    mergeResult?.let { res ->
+        AlertDialog(
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            title = { Text("Files merged") },
+            text = {
+                Text(
+                    "${res.files} files, ${res.inputRows} lines → ${res.outputRows} PI lines in the base unit." +
+                        (if (res.duplicates > 0) "\n${res.duplicates} lines were in more than one file and were counted once." else "") +
+                        "\n\n" + (res.savedTo?.let { "Saved to $it" } ?: "⚠ Could not save to Downloads") +
+                        (if (res.notConverted.isNotEmpty()) "\n\n⚠ Not converted (no base unit in the material list): " +
+                            res.notConverted.take(5).joinToString(", ") + (if (res.notConverted.size > 5) " +${res.notConverted.size - 5} more" else "") +
+                            ". These lines stay in the unit they were counted in." else "") +
+                        (if (res.mixed) "\n\n⚠ You chose PI files and LOG/UPLOAD files together. If they come from the same PDT, its count is added twice." else "")
+                )
+            },
+            confirmButton = { TextButton(onClick = { mergeResult = null }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { XlsxExport.shareFiles(context, res.piFiles); mergeResult = null }) { Text("Share") } }
+        )
+    }
+
+    uploadResult?.let { (ok, text) ->
+        AlertDialog(
+            // Stays on screen until OK is tapped (no closing by tapping outside or Back).
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            icon = {
+                if (ok) Icon(Icons.Filled.Check, null, tint = Color(0xFF2E7D32))
+                else Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error)
+            },
+            title = { Text(if (ok) "Uploaded to server" else "Upload failed") },
+            text = { Text(text) },
+            confirmButton = { TextButton(onClick = { uploadResult = null }) { Text("OK") } }
+        )
+    }
+
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Start a new count?") },
-            text = { Text("This deletes all ${items.size} items. Export first if you need them.") },
+            text = { Text("This deletes all ${items.size} items on this PDT. Export first if you need them.\n\n" +
+                "Counts already uploaded stay on the server. Only the administrator can clear them on the server.") },
             confirmButton = {
                 TextButton(onClick = { scope.launch { dao.deleteAll() }; confirmClear = false }) {
                     Text("Delete all", color = MaterialTheme.colorScheme.error)

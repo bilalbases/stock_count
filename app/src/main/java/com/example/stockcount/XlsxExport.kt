@@ -96,19 +96,35 @@ object XlsxExport {
         return Result(piFiles, savedTo, logFile = logFile)
     }
 
-    class MergeResult(val file: File, val savedTo: String?, val files: Int, val inputRows: Int, val outputRows: Int)
+    class MergeResult(
+        val piFiles: List<File>, val savedTo: String?, val files: Int, val inputRows: Int, val outputRows: Int,
+        val duplicates: Int, val notConverted: List<String>, val mixed: Boolean,
+    )
 
     /**
-     * Merges several PI export files (e.g. from 30 PDTs) into one: rows with the same plant,
-     * storage location, material, stock type and unit are added together; ITEM is renumbered.
+     * Merges export files from several PDTs into PI files ready for SAP, exactly like a normal export:
+     * one PI file per storage location, quantities in the BASE unit (3 OTR -> 30 EA, using the loaded
+     * material list) and merged into the base-unit line.
+     *
+     * Accepts PI files (PI_...), log files (LOG_...) and upload copies (UPLOAD_..._SENT/FAILED).
+     * Log and upload copies list every scan; a scan that appears in several of the chosen files
+     * (e.g. two upload copies of the same PDT) is counted once. [unitOf] returns the material list
+     * entry for a material + unit (base unit and factor), or null if the list has none.
      */
-    fun merge(context: Context, uris: List<android.net.Uri>): MergeResult {
-        class Group(val plant: String, val sloc: String, val material: String, val stockType: String, val uom: String) {
-            var qty = java.math.BigDecimal.ZERO; var zero = false
-        }
-        val groups = LinkedHashMap<String, Group>()
-        var planDate = ""
+    suspend fun merge(
+        context: Context, uris: List<android.net.Uri>, planDate: String,
+        unitOf: suspend (material: String, uom: String) -> Material?,
+    ): MergeResult {
+        val cache = HashMap<String, Material?>()
+        suspend fun unit(material: String, uom: String) =
+            cache.getOrPut(material + "|" + uom.uppercase()) { if (material.isBlank() || uom.isBlank()) null else unitOf(material, uom) }
+        val notConverted = linkedSetOf<String>()
+        val items = ArrayList<Item>()
+        // Scan lines from log/upload files: key -> (most times seen in any ONE file, the line)
+        val scans = LinkedHashMap<String, Pair<Int, Item>>()
+        var plan = if (isValidDate(planDate)) planDate else ""
         var inputRows = 0
+        var anyPi = false; var anyLog = false
         for (uri in uris) {
             val rows = MaterialImport.readRows(context, uri).filter { r -> r.any { it.isNotBlank() } }
             if (rows.isEmpty()) continue
@@ -117,39 +133,75 @@ object XlsxExport {
             val iPlan = idx("PLAN_DATE"); val iPlant = idx("PLANT"); val iSloc = idx("STGE_LOC")
             val iMat = idx("MATERIAL"); val iType = idx("STOCK_TYPE"); val iQty = idx("ENTRY_QNT")
             val iUom = idx("ENTRY_UOM"); val iZero = idx("ZERO_COUNT")
+            val iAt = idx("SCANNED_AT"); val iShelf = idx("SHELF"); val iBc = idx("BARCODE")
+            val iCq = idx("COUNTED_QTY"); val iCu = idx("COUNTED_UOM")
             require(iMat >= 0 && iQty >= 0) { "Not a stock count export: ${uri.lastPathSegment}" }
+            val isLog = iAt >= 0
+            if (isLog) anyLog = true else anyPi = true
+            val inThisFile = HashMap<String, Int>()
             for (r in rows.drop(1)) {
                 fun c(i: Int) = if (i >= 0) r.getOrNull(i)?.trim().orEmpty() else ""
-                if (c(iMat).isEmpty()) continue
+                fun num(v: String) = v.replace(',', '.').toBigDecimalOrNull()
+                val mat = c(iMat)
+                if (mat.isEmpty()) continue
                 inputRows++
-                if (planDate.isEmpty()) planDate = c(iPlan)
-                val key = listOf(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)).joinToString("|")
-                val g = groups.getOrPut(key) { Group(c(iPlant), c(iSloc), c(iMat), c(iType), c(iUom)) }
-                g.qty = g.qty.add(c(iQty).replace(',', '.').toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
-                g.zero = g.zero || c(iZero).equals("X", ignoreCase = true)
+                if (plan.isEmpty() && isValidDate(c(iPlan))) plan = c(iPlan)
+                // Prefer the counted quantity and unit (log/upload files) and convert it with the
+                // material list; otherwise the file's ENTRY_QNT/ENTRY_UOM, converted if possible.
+                var qty = num(c(iQty)) ?: java.math.BigDecimal.ZERO
+                var uom = c(iUom)
+                val cq = num(c(iCq)); val cu = c(iCu)
+                if (cq != null && cu.isNotEmpty() && unit(mat, cu) != null) { qty = cq; uom = cu }
+                val m = unit(mat, uom)
+                if (m != null && !m.baseUom.equals(uom, true)) {
+                    qty = qty.multiply(java.math.BigDecimal.valueOf(m.factor)); uom = m.baseUom
+                } else if (m == null) {
+                    notConverted += "$mat $uom"
+                }
+                val item = Item(
+                    name = "", barcode = c(iBc), material = mat, shelf = c(iShelf),
+                    quantity = qty.toDouble(), uom = uom.uppercase(), stockType = c(iType), storageLoc = c(iSloc),
+                    zeroCount = c(iZero).equals("X", true), baseUom = "", factor = 1.0,
+                ).let { it to c(iPlant) }
+                val at = c(iAt)
+                if (isLog && at.isNotEmpty()) {
+                    val key = listOf(at, c(iPlant), c(iSloc), c(iShelf), c(iBc), mat, c(iType), c(iCq), c(iCu), c(iQty), c(iUom)).joinToString("|")
+                    val n = (inThisFile[key] ?: 0) + 1
+                    inThisFile[key] = n
+                    val seen = scans[key]
+                    if (seen == null || n > seen.first) scans[key] = n to item.first.copy(name = item.second)
+                } else {
+                    items += item.first.copy(name = item.second)   // name carries the plant here
+                }
             }
         }
+        for ((n, item) in scans.values) repeat(n) { items += item }
+        val duplicates = (inputRows - items.size).coerceAtLeast(0)
+
+        // Only materials whose unit is not the base unit matter: an unknown unit that is the only unit
+        // counted for that material is written as it is (like the normal export).
+        val units = items.groupBy { it.material }.mapValues { (_, l) -> l.map { it.uom.uppercase() }.toSet() }
+        val warn = notConverted.filter { e -> val mat = e.substringBefore(' '); (units[mat]?.size ?: 0) > 1 }
+
         val now = Date()
-        val today = dateFormat().format(now)
-        val year = SimpleDateFormat("yyyy", Locale.US).format(now)
-        val out = groups.values
-            .sortedWith(compareBy({ it.plant }, { it.sloc }, { it.material }))
-            .mapIndexed { i, g ->
-                listOf(
-                    today, planDate.ifBlank { today }, year, g.plant, g.sloc, (i + 1).toString(),
-                    g.material, g.stockType, g.qty.stripTrailingZeros().toPlainString(), g.uom,
-                    if (g.zero && g.qty.signum() == 0) "X" else ""
-                )
-            }
-        val plant = groups.values.firstOrNull()?.plant.orEmpty()
         val stamp = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(now)
-        val name = listOfNotNull("PI_MERGED", plant.ifBlank { null }, stamp).joinToString("_")
-            .replace(Regex("[^A-Za-z0-9._-]"), "-")
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
-        val file = File(dir, "$name.xlsx")
-        write(file, out)
-        val saved = runCatching { saveToDownloads(context, file) }.getOrNull()
-        return MergeResult(file, saved, uris.size, inputRows, out.size)
+        val out = ArrayList<File>()
+        var outRows = 0
+        for ((plant, byPlant) in items.groupBy { it.name }.toSortedMap()) {
+            for ((sloc, list) in byPlant.groupBy { it.storageLoc.trim() }.toSortedMap()) {
+                val rows = rows(plant, plan, list.map { it.copy(name = "") }, now)
+                outRows += rows.size
+                val name = listOf("PI_MERGED", plant.ifBlank { null }, sloc.ifBlank { "no-sloc" }, stamp).filterNotNull()
+                    .joinToString("_").replace(Regex("[^A-Za-z0-9._-]"), "-")
+                out += File(dir, "$name.xlsx").also { write(it, rows) }
+            }
+        }
+        require(out.isNotEmpty()) { "No count lines found in the chosen files" }
+        val saved = out.mapNotNull { runCatching { saveToDownloads(context, it) }.getOrNull() }
+        val savedTo = if (saved.isEmpty()) null else
+            "Downloads/StockCount: ${out.size} PI file" + (if (out.size > 1) "s" else "") + " (" + out.joinToString(", ") { it.name } + ")"
+        return MergeResult(out, savedTo, uris.size, inputRows, outRows, duplicates, warn, anyPi && anyLog)
     }
 
     /** Opens the share menu for several files at once (the PI file and its log file). */
@@ -181,16 +233,41 @@ object XlsxExport {
     private const val FOLDER = "StockCount"
     private const val XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    /** Copies [file] to the public Downloads/StockCount folder. Returns the path shown to the user. */
-    private fun saveToDownloads(context: Context, file: File): String {
+    /**
+     * Keeps a copy of exactly what was sent in an upload to the server (every scan line, in the
+     * log layout, locked like the export files) in Downloads/StockCount/Uploads on this PDT, e.g.
+     * UPLOAD_1090_TC21-AB12_2026-11-23_153012_SENT.xlsx (or ..._FAILED.xlsx when the upload failed).
+     * It proves what the PDT sent and when, and can be given to the administrator if the server lacks it.
+     * Returns the path shown to the user, or null if no copy could be saved.
+     */
+    fun saveUploadCopy(context: Context, branch: String, device: String, items: List<Item>, sent: Boolean): String? {
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HHmmss", Locale.US).format(Date())
+        val name = listOf("UPLOAD", branch, device, stamp, if (sent) "SENT" else "FAILED")
+            .filter { it.isNotBlank() }.joinToString("_").replace(Regex("[^A-Za-z0-9._-]"), "-") + ".xlsx"
+        val dir = File(context.cacheDir, "uploads").apply { mkdirs() }
+        val file = File(dir, name)
+        return runCatching {
+            write(file, logRows(branch, items), LOG_HEADERS, LOG_TEXT, LOG_WIDTHS)
+            runCatching { saveToDownloads(context, file, "$FOLDER/Uploads") }.getOrElse {
+                // No access to Downloads (e.g. storage permission refused on an old PDT):
+                // keep it in the app's own folder on the PDT storage instead.
+                val own = File(context.getExternalFilesDir(null) ?: context.filesDir, "Uploads").apply { mkdirs() }
+                file.copyTo(File(own, name), overwrite = true)
+                "Android/data/${context.packageName}/files/Uploads/$name"
+            }
+        }.also { file.delete() }.getOrNull()
+    }
+
+    /** Copies [file] to the public Downloads/StockCount folder (or [folder]). Returns the path shown to the user. */
+    private fun saveToDownloads(context: Context, file: File, folder: String = FOLDER): String {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
                 put(MediaStore.MediaColumns.MIME_TYPE, XLSX)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$folder")
             }
             val resolver = context.contentResolver
-            val relPath = "${Environment.DIRECTORY_DOWNLOADS}/$FOLDER/"
+            val relPath = "${Environment.DIRECTORY_DOWNLOADS}/$folder/"
             // Reuse a file with the same name (same branch and minute) instead of creating "name (1).xlsx".
             val existing = resolver.query(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
@@ -205,11 +282,11 @@ object XlsxExport {
         } else {
             // Android 9 and older: needs the storage permission (asked for before exporting).
             @Suppress("DEPRECATION")
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), FOLDER)
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), folder)
             dir.mkdirs()
             file.copyTo(File(dir, file.name), overwrite = true)
         }
-        return "Downloads/$FOLDER/${file.name}"
+        return "Downloads/$folder/${file.name}"
     }
 
     /**
