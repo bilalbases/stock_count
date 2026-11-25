@@ -34,6 +34,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -142,8 +143,35 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var branch by remember { mutableStateOf(settings.branch) }
     var shelf by remember { mutableStateOf(settings.shelf) }
     var planDate by remember { mutableStateOf(settings.planDate) }
-    var stockType by remember { mutableStateOf(settings.stockType) }
     var storageLoc by remember { mutableStateOf(settings.storageLoc) }
+    // Stock type is never typed or picked: it always follows the storage location (1001-1007).
+    var stockType by remember { mutableStateOf(stockTypeFor(settings.storageLoc) ?: "") }
+
+    /** Header fields that are empty or wrong. All header details are mandatory before counting. */
+    fun headerMissing(): List<String> {
+        val m = mutableListOf<String>()
+        if (branch.isBlank()) m += "Branch ID (Plant)"
+        if (planDate.isBlank()) m += "Plan date"
+        else if (!XlsxExport.isValidDate(planDate)) m += "Plan date (write it as dd.mm.yyyy)"
+        if (storageLoc.isBlank()) m += "Storage location"
+        else if (stockTypeFor(storageLoc) == null) m += "Storage location (${storageLoc.trim()} is not known, use 1001 to 1007)"
+        if (stockType.isBlank()) m += "Stock type (fills in from the storage location)"
+        return m
+    }
+    // Shown in a dialog when counting starts with header details missing.
+    var headerError by remember { mutableStateOf<List<String>?>(null) }
+    fun headerOk(): Boolean {
+        val m = headerMissing()
+        if (m.isEmpty()) return true
+        detailsOpen = true
+        headerError = m
+        return false
+    }
+    fun clearHeader() {
+        branch = ""; planDate = ""; storageLoc = ""; stockType = ""
+        settings.branch = ""; settings.planDate = ""; settings.storageLoc = ""; settings.stockType = ""
+        detailsOpen = true
+    }
     /**
      * Fills in base unit + factor from the current material list for lines that were counted
      * without them (e.g. counted before the list with BASE_UOM/FACTOR was imported), and saves
@@ -215,12 +243,18 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var uploading by remember { mutableStateOf(false) }
     // Result of the last upload. Shown in a dialog that stays until the user taps OK.
     var uploadResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    /**
+     * What to do when an upload has finished, instead of only showing the result dialog
+     * (used by Start new count). Gets: sent?, ids of the lines sent, copy saved?, result text.
+     */
+    class AfterUpload(val run: (Boolean, List<Long>, Boolean, String) -> Unit)
+    var afterUpload by remember { mutableStateOf<AfterUpload?>(null) }
     fun doUpload() {
         if (uploading) return
         uploading = true
         scope.launch {
             val raw = dao.allOnce()
-            if (raw.isEmpty()) { uploading = false; notify("Nothing counted yet, nothing uploaded"); return@launch }
+            if (raw.isEmpty()) { uploading = false; afterUpload = null; notify("Nothing counted yet, nothing uploaded"); return@launch }
             val (list, missing) = withBaseUnits(raw)
             var sent = false
             var msg = ""
@@ -251,20 +285,29 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
             }
             uploading = false
             snackbar.currentSnackbarData?.dismiss()
-            uploadResult = sent to (msg + "\n\n" + (copy?.let { "Copy saved on this PDT:\n$it" } ?: "⚠ Could not save a copy on this PDT."))
+            val text = msg + "\n\n" + (copy?.let { "Copy saved on this PDT:\n$it" } ?: "⚠ Could not save a copy on this PDT.")
+            val after = afterUpload
+            afterUpload = null
+            if (after != null) after.run(sent, list.map { it.id }, copy != null, text)
+            else uploadResult = sent to text
         }
     }
     // Android 9 and older (old PDTs) need permission to save the upload copy in Downloads.
     // If it is refused, the copy goes to the app's own folder instead, so upload either way.
     val uploadStoragePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { doUpload() }
-    fun uploadToSheet() {
-        if (!cloud.isSet) { showCloud = true; return }
+    fun uploadToSheet(after: AfterUpload? = null) {
         if (uploading) return
+        if (!cloud.isSet) {
+            showCloud = true
+            if (after != null) notify("Set up the server first, then tap Start new count again")
+            return
+        }
         if (branch.isBlank() || planDate.isBlank()) {
             detailsOpen = true
             notify("Enter Branch ID and Plan date before uploading")
             return
         }
+        afterUpload = after
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -292,6 +335,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    // Start new count: the upload failed, so nothing was deleted (text, ids of the lines, copy saved?).
+    var newCountFailed by remember { mutableStateOf<Triple<String, List<Long>, Boolean>?>(null) }
     var showAbout by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
     // Quantities typed on the cards but not saved yet (item id -> text).
@@ -355,6 +400,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     var notFound by remember { mutableStateOf<String?>(null) }
 
     fun handleScan(code: String) {
+        // All header details must be filled in before a product is counted.
+        if (!headerOk()) return
         scope.launch {
             // A previous scan is still waiting: keep it if a quantity was typed, otherwise drop it.
             if (current != null) {
@@ -510,14 +557,14 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                         }
                     )
                     ExtendedFloatingActionButton(
-                        onClick = { typedCode = ""; typing = true },
+                        onClick = { if (headerOk()) { typedCode = ""; typing = true } },
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         icon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         text = { Text("Lookup", fontWeight = FontWeight.SemiBold) }
                     )
                     ExtendedFloatingActionButton(
-                        onClick = { scanning = true },
+                        onClick = { if (headerOk()) scanning = true },
                         containerColor = Brand,
                         contentColor = Color.White,
                         icon = { Icon(AppIcons.Barcode, contentDescription = null) },
@@ -575,7 +622,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                     if (!detailsOpen) {
                                         val summary = listOf(
                                             "Branch ${branch.ifBlank { "–" }}",
-                                            "Plan ${planDate.ifBlank { "today" }}",
+                                            "Plan ${planDate.ifBlank { "–" }}",
                                             "SLoc ${storageLoc.ifBlank { "–" }}",
                                             "Type ${stockType.ifBlank { "–" }}",
                                         ).joinToString("  ·  ")
@@ -622,18 +669,18 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                             value = storageLoc,
                                             onValueChange = {
                                                 storageLoc = it.uppercase(); settings.storageLoc = storageLoc
-                                                // Known storage location -> its stock type (e.g. 1004 -> FROZEN)
-                                                stockTypeFor(storageLoc)?.let { t -> stockType = t; settings.stockType = t }
+                                                // Storage location -> its stock type (e.g. 1004 -> FROZEN); unknown = empty
+                                                stockType = stockTypeFor(storageLoc) ?: ""; settings.stockType = stockType
                                             },
-                                            label = { Text("Storage location") },
+                                            label = {
+                                                Text(if (storageLoc.isNotBlank() && stockTypeFor(storageLoc) == null) "Use 1001 to 1007" else "Storage location")
+                                            },
+                                            isError = storageLoc.isNotBlank() && stockTypeFor(storageLoc) == null,
                                             singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                             modifier = Modifier.weight(1f)
                                         )
-                                        StockTypeField(
-                                            value = stockType,
-                                            onChange = { stockType = it; settings.stockType = it },
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        StockTypeField(value = stockType, modifier = Modifier.weight(1f))
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
@@ -926,17 +973,85 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     }
 
     if (confirmClear) {
+        val n = items.size
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Start a new count?") },
-            text = { Text("This deletes all ${items.size} items on this PDT. Export first if you need them.\n\n" +
-                "Counts already uploaded stay on the server. Only the administrator can clear them on the server.") },
+            text = {
+                Text(
+                    if (n == 0) "This clears the header details. Fill them in again before you scan."
+                    else "1. All $n items are uploaded to the server (a copy is also saved on this PDT).\n" +
+                        "2. Then all items are deleted from this PDT.\n" +
+                        "3. The header details are cleared. Fill them in again before you scan.\n\n" +
+                        "If the upload fails, nothing is deleted."
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { scope.launch { dao.deleteAll() }; confirmClear = false }) {
-                    Text("Delete all", color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = {
+                    confirmClear = false
+                    if (n == 0) {
+                        current = null; currentExisting = null; currentQty = ""; currentZero = false; drafts.clear()
+                        clearHeader()
+                        notify("New count started. Fill in the header details.")
+                    } else {
+                        uploadToSheet(AfterUpload { sent, ids, copySaved, text ->
+                            if (sent) {
+                                // Delete only the lines that were sent (anything scanned meanwhile stays).
+                                scope.launch { dao.deleteIds(ids) }
+                                current = null; currentExisting = null; currentQty = ""; currentZero = false; drafts.clear()
+                                clearHeader()
+                                uploadResult = true to (text + "\n\nNew count started: the items were deleted from this PDT " +
+                                    "and the header details were cleared. Fill them in again before you scan.")
+                            } else {
+                                newCountFailed = Triple(text, ids, copySaved)
+                            }
+                        })
+                    }
+                }) {
+                    Text(if (n == 0) "Start new count" else "Upload and start new", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+        )
+    }
+
+    newCountFailed?.let { (text, ids, copySaved) ->
+        var sure by remember { mutableStateOf(false) }
+        AlertDialog(
+            // Stays on screen until a button is tapped.
+            onDismissRequest = {},
+            properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            icon = { Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Upload failed, nothing deleted") },
+            text = {
+                Text(
+                    text + "\n\nYour counts are still on this PDT. Check the Wi-Fi and tap Start new count again." +
+                        (if (copySaved) "\n\nOnly if your supervisor tells you: Delete anyway (the copy above stays on this PDT)." else "")
+                )
+            },
+            confirmButton = { TextButton(onClick = { newCountFailed = null }) { Text("OK, keep counts") } },
+            dismissButton = {
+                if (copySaved) TextButton(onClick = {
+                    if (!sure) sure = true
+                    else {
+                        newCountFailed = null
+                        scope.launch { dao.deleteIds(ids) }
+                        current = null; currentExisting = null; currentQty = ""; currentZero = false; drafts.clear()
+                        clearHeader()
+                        notify("New count started. Fill in the header details.")
+                    }
+                }) { Text(if (sure) "Tap again to delete" else "Delete anyway", color = MaterialTheme.colorScheme.error) }
+            }
+        )
+    }
+
+    headerError?.let { missing ->
+        AlertDialog(
+            onDismissRequest = { headerError = null },
+            icon = { Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Fill in the header details") },
+            text = { Text("All header details are needed before you count. Missing:\n\n" + missing.joinToString("\n") { "• $it" }) },
+            confirmButton = { TextButton(onClick = { headerError = null }) { Text("OK") } }
         )
     }
 
@@ -1134,8 +1249,9 @@ fun EditDialog(
     var uom by remember { mutableStateOf(item.uom) }
     var baseUom by remember { mutableStateOf(item.baseUom) }
     var factor by remember { mutableStateOf(item.factor) }
-    var stockType by remember { mutableStateOf(item.stockType) }
     var storageLoc by remember { mutableStateOf(item.storageLoc) }
+    // Stock type follows the storage location (not editable).
+    val stockType = stockTypeFor(storageLoc) ?: ""
     var qty by remember { mutableStateOf(if (notFoundCode != null) "" else fmtQty(item.quantity)) }
     var zeroCount by remember { mutableStateOf(item.zeroCount) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -1209,8 +1325,14 @@ fun EditDialog(
                 )
                 OutlinedTextField(uom, { uom = it.uppercase() }, label = { Text("Unit (EA, CAR...)") }, singleLine = true)
                 OutlinedTextField(shelf, { shelf = it }, label = { Text("Shelf ID") }, singleLine = true)
-                OutlinedTextField(storageLoc, { storageLoc = it.uppercase(); stockTypeFor(storageLoc)?.let { t -> stockType = t } }, label = { Text("Storage location") }, singleLine = true)
-                StockTypeField(stockType, { stockType = it })
+                OutlinedTextField(
+                    storageLoc, { storageLoc = it.uppercase() },
+                    label = { Text(if (stockType.isEmpty()) "Storage location: use 1001 to 1007" else "Storage location") },
+                    singleLine = true,
+                    isError = stockType.isEmpty(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                StockTypeField(stockType)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = zeroCount, onCheckedChange = { zeroCount = it; if (it) qty = "0" })
                     Text("Zero count")
@@ -1224,7 +1346,7 @@ fun EditDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = (material.isNotBlank() || name.isNotBlank()) && (qty.isNotEmpty() || zeroCount),
+                enabled = (material.isNotBlank() || name.isNotBlank()) && (qty.isNotEmpty() || zeroCount) && stockType.isNotEmpty(),
                 onClick = {
                     onSave(item.copy(name = name.trim(), barcode = barcode.trim(), material = material.trim(), shelf = shelf.trim(), uom = uom.trim().ifEmpty { "EA" }, baseUom = baseUom, factor = if (uom.trim().equals(baseUom, true)) 1.0 else factor, stockType = stockType.trim(), storageLoc = storageLoc.trim(), quantity = parseQty(qty) ?: 0.0, zeroCount = zeroCount))
                 }
@@ -1329,32 +1451,20 @@ val SLOC_STOCK_TYPES = linkedMapOf(
 /** Stock type for a storage location, in capitals as exported (null = unknown SLoc). */
 fun stockTypeFor(sloc: String): String? = SLOC_STOCK_TYPES[sloc.trim()]?.uppercase()
 
-/** Stock types to pick from (saved and exported in capitals, blank first, then A-Z). */
-val STOCK_TYPES = listOf("") + SLOC_STOCK_TYPES.values.sortedBy { it.lowercase() }
-
-/** Stock type as a dropdown list instead of free text. */
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Stock type, shown but not editable: it always comes from the storage location
+ * (choosing a stock type would not change the storage location, so it is locked).
+ */
 @Composable
-fun StockTypeField(value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    var open by remember { mutableStateOf(false) }
-    val shown = STOCK_TYPES.firstOrNull { it.equals(value, ignoreCase = true) } ?: value
-    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }, modifier = modifier) {
-        OutlinedTextField(
-            value = shown,
-            onValueChange = {},
-            readOnly = true,
-            singleLine = true,
-            label = { Text("Stock type") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
-            modifier = Modifier.menuAnchor().fillMaxWidth()
-        )
-        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            STOCK_TYPES.forEach { t ->
-                DropdownMenuItem(
-                    text = { Text(t.ifEmpty { " " }) },   // first entry: empty = no stock type
-                    onClick = { onChange(t.uppercase()); open = false }
-                )
-            }
-        }
-    }
+fun StockTypeField(value: String, modifier: Modifier = Modifier) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = {},
+        readOnly = true,
+        singleLine = true,
+        label = { Text("Stock type") },
+        placeholder = { Text("From storage location") },
+        trailingIcon = { Icon(Icons.Filled.Lock, contentDescription = "Set by storage location") },
+        modifier = modifier.fillMaxWidth()
+    )
 }

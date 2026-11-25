@@ -79,6 +79,10 @@ interface ItemDao {
     @Query("DELETE FROM items")
     suspend fun deleteAll()
 
+    /** Deletes only these lines (used after an upload, so lines scanned meanwhile are kept). */
+    @Query("DELETE FROM items WHERE id IN (:ids)")
+    suspend fun deleteIds(ids: List<Long>)
+
     @Query("UPDATE items SET quantity = MAX(0, quantity + :delta), zeroCount = CASE WHEN :delta > 0 THEN 0 ELSE zeroCount END WHERE id = :id")
     suspend fun change(id: Long, delta: Int)
 }
