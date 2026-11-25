@@ -2,14 +2,20 @@
 *& Report ZMM_STOCKCOUNT_MATLIST_PRICE
 *&---------------------------------------------------------------------*
 *& Copy of ZMM_STOCKCOUNT_MATLIST with two extra columns at the end:
-*&   PRICE    = valuation price of ONE unit of the row's UOM, from the
-*&              material master accounting view (MBEW) of the branch:
-*&              moving average price (VERPR) when price control is V,
-*&              standard price (STPRS) when it is S, divided by the
-*&              price unit (PEINH) and multiplied by FACTOR.
-*&              Example: 1 EA = 2.50, OTR of 10 EA -> EA row 2.50,
-*&              OTR row 25.00. Empty when the article has no valuation.
-*&   CURRENCY = company code currency of the branch (e.g. AED).
+*&   PRICE    = selling price of ONE unit of the row's UOM, from the
+*&              VKP0 condition records (as in VK13) valid today: first
+*&              the branch (site) level record, else the sales org /
+*&              distribution channel level record. The sales org and
+*&              channel come from the branch (T001W) unless entered on
+*&              the selection screen. If there is a record for the
+*&              row's own unit it is used as is, otherwise the price is
+*&              converted with the unit factors (EA 2.50 -> OTR of 10
+*&              EA 25.00). Empty when the article has no VKP0 price.
+*&   CURRENCY = currency of the condition record (e.g. AED).
+*& The condition tables read are listed in GT_VKP0_TABS (INITIALIZATION):
+*& A071 (site level) and A004 (sales org / channel level) by default.
+*& If your VKP0 access sequence uses other tables (see VK13 > key
+*& combination, or V/07), add or change them there.
 *& Promotions: if table ZPOS_EXCEL_CMPG has the row's material AND unit
 *& (MATNR + UOM = this barcode) for this branch (STORE_CODE = branch)
 *& with a CUSTOMER_DISCOUNT, and today is between VALIDITY_FROM and
@@ -62,7 +68,15 @@ TYPES: BEGIN OF ty_out,                      " string columns = text cells in Ex
          matnr TYPE mara-matnr,
          ean11 TYPE mean-ean11,
          meinh TYPE marm-meinh,
-       END OF ty_row.
+       END OF ty_row,
+       BEGIN OF ty_sp,                       " selling price per condition unit
+         matnr TYPE mara-matnr,
+         kmein TYPE konp-kmein,
+         kbetr TYPE konp-kbetr,
+         kpein TYPE konp-kpein,
+         konwa TYPE konp-konwa,
+       END OF ty_sp,
+       tt_sp TYPE SORTED TABLE OF ty_sp WITH UNIQUE KEY matnr kmein.
 
 TYPES: BEGIN OF ty_disc,
          matnr TYPE mara-matnr,
@@ -70,7 +84,8 @@ TYPES: BEGIN OF ty_disc,
          disc  TYPE netwr,
        END OF ty_disc.
 
-DATA: gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY matnr uom,
+DATA: gt_vkp0_tabs TYPE STANDARD TABLE OF tabname WITH DEFAULT KEY,  " in priority order
+      gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY matnr uom,
       gt_out      TYPE STANDARD TABLE OF ty_out,
       gv_xlsx     TYPE xstring,
       gr_inactive TYPE RANGE OF mara-mstae.   " empty = any status counts as inactive
@@ -79,6 +94,8 @@ DATA: gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY matnr uom,
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
   PARAMETERS:     p_werks TYPE marc-werks OBLIGATORY.  " Branch
   SELECT-OPTIONS: s_matnr FOR mara-matnr.              " Optional, empty = all
+  PARAMETERS:     p_vkorg TYPE t001w-vkorg,            " Optional, empty = from branch
+                  p_vtweg TYPE t001w-vtweg.            " Optional, empty = from branch
 SELECTION-SCREEN END OF BLOCK b1.
 
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
@@ -90,6 +107,9 @@ SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
 SELECTION-SCREEN END OF BLOCK b2.
 
 INITIALIZATION.
+  " VKP0 condition tables, most specific first
+  APPEND 'A071' TO gt_vkp0_tabs.     " Sales org / Distr. channel / Site / Material
+  APPEND 'A004' TO gt_vkp0_tabs.     " Sales org / Distr. channel / Material
   " Example: only status codes 01 and 02 mean inactive
   " APPEND VALUE #( sign = 'I' option = 'EQ' low = '01' ) TO gr_inactive.
   " APPEND VALUE #( sign = 'I' option = 'EQ' low = '02' ) TO gr_inactive.
@@ -130,13 +150,6 @@ FORM select_data.
            mstae TYPE mara-mstae,
            mmsta TYPE marc-mmsta,
          END OF ty_mat,
-         BEGIN OF ty_val,
-           matnr TYPE mbew-matnr,
-           vprsv TYPE mbew-vprsv,
-           verpr TYPE mbew-verpr,
-           stprs TYPE mbew-stprs,
-           peinh TYPE mbew-peinh,
-         END OF ty_val,
          BEGIN OF ty_conv,
            matnr TYPE marm-matnr,
            meinh TYPE marm-meinh,
@@ -158,10 +171,10 @@ FORM select_data.
         lv_mat  TYPE char40,
         lv_uom  TYPE char3,
         lv_base TYPE char3,
-        lt_val  TYPE SORTED TABLE OF ty_val WITH UNIQUE KEY matnr,
-        ls_val  TYPE ty_val,
-        lv_bwkey TYPE t001w-bwkey,
-        lv_waers TYPE t001-waers,
+        lt_sp   TYPE tt_sp,
+        ls_sp   TYPE ty_sp,
+        lv_cfac TYPE p LENGTH 15 DECIMALS 6,
+        lv_found TYPE abap_bool,
         lv_price TYPE p LENGTH 16 DECIMALS 4,
         lv_pstr  TYPE string,
         ls_disc  TYPE ty_disc.
@@ -214,19 +227,8 @@ FORM select_data.
     WHERE matnr = lt_mat-matnr.
   lt_matk = lt_mat.
 
-  " 3c. Prices: valuation area of the branch, its currency, and the
-  "     valuation price per article (MBEW, no valuation type split)
-  SELECT SINGLE bwkey FROM t001w INTO lv_bwkey WHERE werks = p_werks.
-  SELECT SINGLE t~waers FROM t001k AS k
-    INNER JOIN t001 AS t ON t~bukrs = k~bukrs
-    INTO lv_waers
-    WHERE k~bwkey = lv_bwkey.
-  SELECT matnr vprsv verpr stprs peinh FROM mbew
-    INTO CORRESPONDING FIELDS OF TABLE lt_val
-    FOR ALL ENTRIES IN lt_mat
-    WHERE matnr = lt_mat-matnr
-      AND bwkey = lv_bwkey
-      AND bwtar = space.
+  " 3c. Selling prices (VKP0 condition records valid today)
+  PERFORM read_vkp0 CHANGING lt_sp.
 
   " 3d. Promotion discounts per article + unit (ZPOS_EXCEL_CMPG)
   PERFORM read_discounts.
@@ -286,18 +288,32 @@ FORM select_data.
       ls_out-description = ls_makt-maktx.
     ENDIF.
 
-    " Price of one row UOM = price per base unit x factor
-    CLEAR ls_val.
-    READ TABLE lt_val INTO ls_val WITH TABLE KEY matnr = <r>-matnr.
+    " Selling price of one row UOM: record for this unit, else convert
+    "   from the record of another unit via the unit factors
+    lv_found = abap_false.
+    READ TABLE lt_sp INTO ls_sp WITH TABLE KEY matnr = <r>-matnr kmein = <r>-meinh.
     IF sy-subrc = 0.
-      IF ls_val-peinh = 0.
-        ls_val-peinh = 1.
-      ENDIF.
-      IF ls_val-vprsv = 'S'.
-        lv_price = ls_val-stprs * lv_fact / ls_val-peinh.
-      ELSE.
-        lv_price = ls_val-verpr * lv_fact / ls_val-peinh.
-      ENDIF.
+      lv_found = abap_true.
+      IF ls_sp-kpein = 0. ls_sp-kpein = 1. ENDIF.
+      lv_price = ls_sp-kbetr / ls_sp-kpein.
+    ELSE.
+      LOOP AT lt_sp INTO ls_sp WHERE matnr = <r>-matnr.
+        CLEAR ls_conv.
+        READ TABLE lt_conv INTO ls_conv WITH TABLE KEY matnr = <r>-matnr meinh = ls_sp-kmein.
+        IF sy-subrc = 0 AND ls_conv-umrez <> 0 AND ls_conv-umren <> 0.
+          lv_cfac = ls_conv-umrez / ls_conv-umren.        " base units per condition unit
+        ELSEIF ls_sp-kmein = ls_mat-meins.
+          lv_cfac = 1.
+        ELSE.
+          CONTINUE.
+        ENDIF.
+        IF ls_sp-kpein = 0. ls_sp-kpein = 1. ENDIF.
+        lv_price = ls_sp-kbetr / ls_sp-kpein / lv_cfac * lv_fact.
+        lv_found = abap_true.
+        EXIT.
+      ENDLOOP.
+    ENDIF.
+    IF lv_found = abap_true.
       " Promotion: barcode found with a customer discount -> promotion price
       READ TABLE gt_disc INTO ls_disc WITH TABLE KEY matnr = <r>-matnr uom = <r>-meinh.
       IF sy-subrc = 0.
@@ -310,9 +326,105 @@ FORM select_data.
       lv_pstr = replace( val = lv_pstr regex = '(\.\d\d\d?)0+$' with = '$1' ).
       lv_pstr = replace( val = lv_pstr regex = '(\.\d\d)0$' with = '$1' ).
       ls_out-price    = condense( val = lv_pstr ).
-      ls_out-currency = lv_waers.
+      ls_out-currency = ls_sp-konwa.
     ENDIF.
     APPEND ls_out TO gt_out.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Reads today's VKP0 selling prices of the branch into CT_SP
+*& (material + condition unit). Tables in GT_VKP0_TABS are read in
+*& order; the first one that has a price for an article/unit wins.
+*& Fields WERKS and VRKME are only used when the table has them.
+FORM read_vkp0 CHANGING ct_sp TYPE tt_sp.
+  TYPES: BEGIN OF ty_key,
+           knumh TYPE konh-knumh,
+           matnr TYPE mara-matnr,
+         END OF ty_key.
+  DATA: lv_vkorg TYPE t001w-vkorg,
+        lv_vtweg TYPE t001w-vtweg,
+        lv_tab   TYPE tabname,
+        lv_where TYPE string,
+        lo_type  TYPE REF TO cl_abap_typedescr,
+        lo_struc TYPE REF TO cl_abap_structdescr,
+        lt_flds  TYPE ddfields,
+        lr_tab   TYPE REF TO data,
+        lt_key   TYPE STANDARD TABLE OF ty_key,
+        ls_key   TYPE ty_key,
+        lt_konp  TYPE SORTED TABLE OF konp WITH NON-UNIQUE KEY knumh,
+        ls_konp  TYPE konp,
+        ls_sp    TYPE ty_sp,
+        lx_err   TYPE REF TO cx_root.
+  FIELD-SYMBOLS: <t> TYPE STANDARD TABLE,
+                 <w> TYPE any,
+                 <f> TYPE any.
+
+  SELECT SINGLE vkorg vtweg FROM t001w INTO (lv_vkorg, lv_vtweg) WHERE werks = p_werks.
+  IF p_vkorg IS NOT INITIAL. lv_vkorg = p_vkorg. ENDIF.
+  IF p_vtweg IS NOT INITIAL. lv_vtweg = p_vtweg. ENDIF.
+  IF lv_vkorg IS INITIAL OR lv_vtweg IS INITIAL.
+    MESSAGE |Branch { p_werks } has no sales org / distribution channel - enter them on the selection screen|
+      TYPE 'S' DISPLAY LIKE 'W'.
+  ENDIF.
+
+  LOOP AT gt_vkp0_tabs INTO lv_tab.
+    cl_abap_typedescr=>describe_by_name(
+      EXPORTING  p_name         = lv_tab
+      RECEIVING  p_descr_ref    = lo_type
+      EXCEPTIONS type_not_found = 1
+                 OTHERS         = 2 ).
+    CHECK sy-subrc = 0.
+    lo_struc ?= lo_type.
+    lt_flds = lo_struc->get_ddic_field_list( ).
+
+    lv_where = |KAPPL = 'V' AND KSCHL = 'VKP0' AND DATAB <= '{ sy-datum }' AND DATBI >= '{ sy-datum }'|.
+    READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'VKORG'.
+    IF sy-subrc = 0. lv_where = |{ lv_where } AND VKORG = '{ lv_vkorg }'|. ENDIF.
+    READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'VTWEG'.
+    IF sy-subrc = 0. lv_where = |{ lv_where } AND VTWEG = '{ lv_vtweg }'|. ENDIF.
+    READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'WERKS'.
+    IF sy-subrc = 0. lv_where = |{ lv_where } AND WERKS = '{ p_werks }'|. ENDIF.
+    READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'MATNR'.
+    CHECK sy-subrc = 0.
+
+    CREATE DATA lr_tab TYPE STANDARD TABLE OF (lv_tab).
+    ASSIGN lr_tab->* TO <t>.
+    TRY.
+        SELECT * FROM (lv_tab) INTO TABLE <t> WHERE (lv_where).
+      CATCH cx_root INTO lx_err.
+        MESSAGE |{ lv_tab }: { lx_err->get_text( ) }| TYPE 'S' DISPLAY LIKE 'W'.
+        CONTINUE.
+    ENDTRY.
+    CHECK <t> IS NOT INITIAL.
+
+    CLEAR lt_key.
+    LOOP AT <t> ASSIGNING <w>.
+      ASSIGN COMPONENT 'MATNR' OF STRUCTURE <w> TO <f>.
+      CHECK <f> IN s_matnr.
+      ls_key-matnr = <f>.
+      ASSIGN COMPONENT 'KNUMH' OF STRUCTURE <w> TO <f>.
+      ls_key-knumh = <f>.
+      APPEND ls_key TO lt_key.
+    ENDLOOP.
+    CHECK lt_key IS NOT INITIAL.
+
+    SELECT * FROM konp INTO TABLE lt_konp
+      FOR ALL ENTRIES IN lt_key
+      WHERE knumh = lt_key-knumh
+        AND loevm_ko = space.
+
+    LOOP AT lt_key INTO ls_key.
+      LOOP AT lt_konp INTO ls_konp WHERE knumh = ls_key-knumh.
+        ls_sp-matnr = ls_key-matnr.
+        ls_sp-kmein = ls_konp-kmein.
+        ls_sp-kbetr = ls_konp-kbetr.
+        ls_sp-kpein = ls_konp-kpein.
+        ls_sp-konwa = ls_konp-konwa.
+        INSERT ls_sp INTO TABLE ct_sp.      " already there from a more specific table: kept
+        EXIT.
+      ENDLOOP.
+    ENDLOOP.
   ENDLOOP.
 ENDFORM.
 
@@ -479,6 +591,8 @@ ENDFORM.
 *& Text elements to create in SE38 > Goto > Text elements:
 *&   Text symbols:    001 = Selection,  002 = Output
 *&   Selection texts: P_WERKS = Branch (plant), S_MATNR = Material,
+*&                    P_VKORG = Sales org (optional),
+*&                    P_VTWEG = Distribution channel (optional),
 *&                    P_ALV = Show list (ALV),
 *&                    P_PC = Save to PC,  P_FILE = PC file,
 *&                    P_APPL = Save to app. server,
@@ -486,7 +600,5 @@ ENDFORM.
 *&
 *& Background job: SM36, step = this report with a variant for the
 *& branch. It writes to P_AFILE; make sure that folder exists (AL11).
-*& Authorization note: PRICE shows valuation prices; restrict the new
-*& transaction (SE93) to users allowed to see them.
 *& Needs ABAP 7.40 or newer (S/4HANA or ECC EhP7+).
 *&---------------------------------------------------------------------*
