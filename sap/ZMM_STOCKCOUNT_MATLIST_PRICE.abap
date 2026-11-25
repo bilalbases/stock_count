@@ -4,16 +4,17 @@
 *& Copy of ZMM_STOCKCOUNT_MATLIST with two extra columns at the end:
 *&   PRICE    = selling price of ONE unit of the row's UOM, from the
 *&              VKP0 condition records (as in VK13) valid today: first
-*&              the branch (site) level record, else the sales org /
-*&              distribution channel level record. The sales org and
-*&              channel come from the branch (T001W) unless entered on
-*&              the selection screen. If there is a record for the
+*&              the branch (site) level record (A071), else the price
+*&              list level record (A073). Sales org, distribution
+*&              channel and price list come from the branch (T001W and
+*&              the branch's customer KNVV-PLTYP) unless entered on the
+*&              selection screen. If there is a record for the
 *&              row's own unit it is used as is, otherwise the price is
 *&              converted with the unit factors (EA 2.50 -> OTR of 10
 *&              EA 25.00). Empty when the article has no VKP0 price.
 *&   CURRENCY = currency of the condition record (e.g. AED).
 *& The condition tables read are listed in GT_VKP0_TABS (INITIALIZATION):
-*& A071 (site level) and A004 (sales org / channel level) by default.
+*& A071 (site level) and A073 (price list level) by default.
 *& If your VKP0 access sequence uses other tables (see VK13 > key
 *& combination, or V/07), add or change them there.
 *& Promotions: if table ZPOS_EXCEL_CMPG has the row's material AND unit
@@ -95,7 +96,8 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
   PARAMETERS:     p_werks TYPE marc-werks OBLIGATORY.  " Branch
   SELECT-OPTIONS: s_matnr FOR mara-matnr.              " Optional, empty = all
   PARAMETERS:     p_vkorg TYPE t001w-vkorg,            " Optional, empty = from branch
-                  p_vtweg TYPE t001w-vtweg.            " Optional, empty = from branch
+                  p_vtweg TYPE t001w-vtweg,            " Optional, empty = from branch
+                  p_pltyp TYPE knvv-pltyp.             " Optional, empty = from branch
 SELECTION-SCREEN END OF BLOCK b1.
 
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
@@ -109,7 +111,7 @@ SELECTION-SCREEN END OF BLOCK b2.
 INITIALIZATION.
   " VKP0 condition tables, most specific first
   APPEND 'A071' TO gt_vkp0_tabs.     " Sales org / Distr. channel / Site / Material
-  APPEND 'A004' TO gt_vkp0_tabs.     " Sales org / Distr. channel / Material
+  APPEND 'A073' TO gt_vkp0_tabs.     " Sales org / Distr. channel / Price list / Material
   " Example: only status codes 01 and 02 mean inactive
   " APPEND VALUE #( sign = 'I' option = 'EQ' low = '01' ) TO gr_inactive.
   " APPEND VALUE #( sign = 'I' option = 'EQ' low = '02' ) TO gr_inactive.
@@ -344,6 +346,8 @@ FORM read_vkp0 CHANGING ct_sp TYPE tt_sp.
          END OF ty_key.
   DATA: lv_vkorg TYPE t001w-vkorg,
         lv_vtweg TYPE t001w-vtweg,
+        lv_kunnr TYPE t001w-kunnr,
+        lv_pltyp TYPE knvv-pltyp,
         lv_tab   TYPE tabname,
         lv_where TYPE string,
         lo_type  TYPE REF TO cl_abap_typedescr,
@@ -360,9 +364,16 @@ FORM read_vkp0 CHANGING ct_sp TYPE tt_sp.
                  <w> TYPE any,
                  <f> TYPE any.
 
-  SELECT SINGLE vkorg vtweg FROM t001w INTO (lv_vkorg, lv_vtweg) WHERE werks = p_werks.
+  SELECT SINGLE vkorg vtweg kunnr FROM t001w INTO (lv_vkorg, lv_vtweg, lv_kunnr) WHERE werks = p_werks.
   IF p_vkorg IS NOT INITIAL. lv_vkorg = p_vkorg. ENDIF.
   IF p_vtweg IS NOT INITIAL. lv_vtweg = p_vtweg. ENDIF.
+  " Price list of the branch: its customer's sales data
+  IF lv_kunnr IS NOT INITIAL.
+    SELECT pltyp FROM knvv UP TO 1 ROWS INTO lv_pltyp
+      WHERE kunnr = lv_kunnr AND vkorg = lv_vkorg AND vtweg = lv_vtweg AND pltyp <> space.
+    ENDSELECT.
+  ENDIF.
+  IF p_pltyp IS NOT INITIAL. lv_pltyp = p_pltyp. ENDIF.
   IF lv_vkorg IS INITIAL OR lv_vtweg IS INITIAL.
     MESSAGE |Branch { p_werks } has no sales org / distribution channel - enter them on the selection screen|
       TYPE 'S' DISPLAY LIKE 'W'.
@@ -385,6 +396,15 @@ FORM read_vkp0 CHANGING ct_sp TYPE tt_sp.
     IF sy-subrc = 0. lv_where = |{ lv_where } AND VTWEG = '{ lv_vtweg }'|. ENDIF.
     READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'WERKS'.
     IF sy-subrc = 0. lv_where = |{ lv_where } AND WERKS = '{ p_werks }'|. ENDIF.
+    READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'PLTYP'.
+    IF sy-subrc = 0.
+      IF lv_pltyp IS INITIAL.
+        MESSAGE |No price list found for branch { p_werks } - { lv_tab } skipped (enter it on the selection screen)|
+          TYPE 'S' DISPLAY LIKE 'W'.
+        CONTINUE.
+      ENDIF.
+      lv_where = |{ lv_where } AND PLTYP = '{ lv_pltyp }'|.
+    ENDIF.
     READ TABLE lt_flds TRANSPORTING NO FIELDS WITH KEY fieldname = 'MATNR'.
     CHECK sy-subrc = 0.
 
@@ -593,6 +613,7 @@ ENDFORM.
 *&   Selection texts: P_WERKS = Branch (plant), S_MATNR = Material,
 *&                    P_VKORG = Sales org (optional),
 *&                    P_VTWEG = Distribution channel (optional),
+*&                    P_PLTYP = Price list (optional),
 *&                    P_ALV = Show list (ALV),
 *&                    P_PC = Save to PC,  P_FILE = PC file,
 *&                    P_APPL = Save to app. server,
