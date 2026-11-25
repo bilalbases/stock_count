@@ -335,8 +335,8 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
     }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
-    // Start new count: the upload failed, so nothing was deleted (text, ids of the lines, copy saved?).
-    var newCountFailed by remember { mutableStateOf<Triple<String, List<Long>, Boolean>?>(null) }
+    // Start new count: the upload failed, so nothing was deleted (result text).
+    var newCountFailed by remember { mutableStateOf<String?>(null) }
     var showAbout by remember { mutableStateOf(false) }
     // Item being added/edited. id = 0 means a new item.
     // Quantities typed on the cards but not saved yet (item id -> text).
@@ -1003,7 +1003,7 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
                                 uploadResult = true to (text + "\n\nNew count started: the items were deleted from this PDT " +
                                     "and the header details were cleared. Fill them in again before you scan.")
                             } else {
-                                newCountFailed = Triple(text, ids, copySaved)
+                                newCountFailed = text
                             }
                         })
                     }
@@ -1015,33 +1015,15 @@ fun StockScreen(dao: ItemDao, materials: MaterialDao, settings: Settings, hardwa
         )
     }
 
-    newCountFailed?.let { (text, ids, copySaved) ->
-        var sure by remember { mutableStateOf(false) }
+    newCountFailed?.let { text ->
         AlertDialog(
-            // Stays on screen until a button is tapped.
+            // Stays on screen until OK is tapped. Nothing is deleted when the upload failed.
             onDismissRequest = {},
             properties = androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
             icon = { Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("Upload failed, nothing deleted") },
-            text = {
-                Text(
-                    text + "\n\nYour counts are still on this PDT. Check the Wi-Fi and tap Start new count again." +
-                        (if (copySaved) "\n\nOnly if your supervisor tells you: Delete anyway (the copy above stays on this PDT)." else "")
-                )
-            },
-            confirmButton = { TextButton(onClick = { newCountFailed = null }) { Text("OK, keep counts") } },
-            dismissButton = {
-                if (copySaved) TextButton(onClick = {
-                    if (!sure) sure = true
-                    else {
-                        newCountFailed = null
-                        scope.launch { dao.deleteIds(ids) }
-                        current = null; currentExisting = null; currentQty = ""; currentZero = false; drafts.clear()
-                        clearHeader()
-                        notify("New count started. Fill in the header details.")
-                    }
-                }) { Text(if (sure) "Tap again to delete" else "Delete anyway", color = MaterialTheme.colorScheme.error) }
-            }
+            text = { Text(text + "\n\nYour counts are still on this PDT. Check the Wi-Fi and tap Start new count again.") },
+            confirmButton = { TextButton(onClick = { newCountFailed = null }) { Text("OK") } }
         )
     }
 
