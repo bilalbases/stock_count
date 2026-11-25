@@ -10,12 +10,11 @@
 *&              Example: 1 EA = 2.50, OTR of 10 EA -> EA row 2.50,
 *&              OTR row 25.00. Empty when the article has no valuation.
 *&   CURRENCY = company code currency of the branch (e.g. AED).
-*& Promotions: if table ZPOS_EXCEL_CMPG has the article for this branch
-*& (STORE_CODE = branch) with a CUSTOMER_DISCOUNT and today is between
-*& VALIDITY_FROM and VALIDITY_TO, PRICE is the promotion price
-*& = price - discount (never below 0). The discount is per the table's
-*& UOM; for the article's other units it is converted with the unit
-*& factors (e.g. 1.00 off per EA -> 10.00 off per OTR of 10 EA).
+*& Promotions: if table ZPOS_EXCEL_CMPG has the row's material AND unit
+*& (MATNR + UOM = this barcode) for this branch (STORE_CODE = branch)
+*& with a CUSTOMER_DISCOUNT, and today is between VALIDITY_FROM and
+*& VALIDITY_TO, PRICE is the promotion price = price - discount
+*& (never below 0). Other units of the same article keep normal price.
 *& The file still loads in the Stock Count app (extra columns are
 *& ignored there).
 *&
@@ -67,10 +66,11 @@ TYPES: BEGIN OF ty_out,                      " string columns = text cells in Ex
 
 TYPES: BEGIN OF ty_disc,
          matnr TYPE mara-matnr,
-         disc  TYPE p LENGTH 16 DECIMALS 6,   " discount per BASE unit
+         uom   TYPE mara-meins,
+         disc  TYPE netwr,
        END OF ty_disc.
 
-DATA: gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY matnr,
+DATA: gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY matnr uom,
       gt_out      TYPE STANDARD TABLE OF ty_out,
       gv_xlsx     TYPE xstring,
       gr_inactive TYPE RANGE OF mara-mstae.   " empty = any status counts as inactive
@@ -228,8 +228,8 @@ FORM select_data.
       AND bwkey = lv_bwkey
       AND bwtar = space.
 
-  " 3d. Promotion discounts per article (ZPOS_EXCEL_CMPG), per base unit
-  PERFORM read_discounts USING lt_conv.
+  " 3d. Promotion discounts per article + unit (ZPOS_EXCEL_CMPG)
+  PERFORM read_discounts.
 
   " 4. Descriptions
   SELECT * FROM makt
@@ -299,9 +299,9 @@ FORM select_data.
         lv_price = ls_val-verpr * lv_fact / ls_val-peinh.
       ENDIF.
       " Promotion: barcode found with a customer discount -> promotion price
-      READ TABLE gt_disc INTO ls_disc WITH TABLE KEY matnr = <r>-matnr.
+      READ TABLE gt_disc INTO ls_disc WITH TABLE KEY matnr = <r>-matnr uom = <r>-meinh.
       IF sy-subrc = 0.
-        lv_price = lv_price - ls_disc-disc * lv_fact.
+        lv_price = lv_price - ls_disc-disc.
         IF lv_price < 0.
           lv_price = 0.
         ENDIF.
@@ -318,8 +318,8 @@ ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& Reads today's customer discounts of the branch from ZPOS_EXCEL_CMPG
-*& into GT_DISC, converted to a discount per base unit of the article.
-FORM read_discounts USING it_conv TYPE ANY TABLE.
+*& into GT_DISC (material + unit -> discount amount).
+FORM read_discounts.
   TYPES: BEGIN OF ty_cmpg,
            matnr             TYPE mara-matnr,
            uom               TYPE mara-meins,
@@ -329,11 +329,7 @@ FORM read_discounts USING it_conv TYPE ANY TABLE.
   DATA: lt_cmpg  TYPE STANDARD TABLE OF ty_cmpg,
         ls_cmpg  TYPE ty_cmpg,
         ls_disc  TYPE ty_disc,
-        lv_store TYPE char4,
-        lv_umrez TYPE marm-umrez,
-        lv_umren TYPE marm-umren.
-  FIELD-SYMBOLS: <c> TYPE any,
-                 <v> TYPE any.
+        lv_store TYPE char4.
 
   lv_store = p_werks.
   SELECT matnr uom customer_discount validity_from
@@ -344,31 +340,12 @@ FORM read_discounts USING it_conv TYPE ANY TABLE.
       AND validity_from    <= sy-datum
       AND validity_to      >= sy-datum.
 
-  " Newest campaign first, so it wins if an article has several
-  SORT lt_cmpg BY matnr validity_from DESCENDING.
+  SORT lt_cmpg BY matnr uom validity_from DESCENDING.
   LOOP AT lt_cmpg INTO ls_cmpg.
-    READ TABLE gt_disc TRANSPORTING NO FIELDS WITH TABLE KEY matnr = ls_cmpg-matnr.
-    CHECK sy-subrc <> 0.
-    " 1 <uom> = umrez / umren base units  ->  discount per base unit
-    lv_umrez = 1.
-    lv_umren = 1.
-    LOOP AT it_conv ASSIGNING <c>.
-      ASSIGN COMPONENT 'MATNR' OF STRUCTURE <c> TO <v>.
-      CHECK <v> = ls_cmpg-matnr.
-      ASSIGN COMPONENT 'MEINH' OF STRUCTURE <c> TO <v>.
-      CHECK <v> = ls_cmpg-uom.
-      ASSIGN COMPONENT 'UMREZ' OF STRUCTURE <c> TO <v>.
-      lv_umrez = <v>.
-      ASSIGN COMPONENT 'UMREN' OF STRUCTURE <c> TO <v>.
-      lv_umren = <v>.
-      EXIT.
-    ENDLOOP.
-    IF lv_umrez = 0.
-      lv_umrez = 1.
-    ENDIF.
     ls_disc-matnr = ls_cmpg-matnr.
-    ls_disc-disc  = ls_cmpg-customer_discount * lv_umren / lv_umrez.
-    INSERT ls_disc INTO TABLE gt_disc.
+    ls_disc-uom   = ls_cmpg-uom.
+    ls_disc-disc  = ls_cmpg-customer_discount.
+    INSERT ls_disc INTO TABLE gt_disc.     " duplicate key: newest already in
   ENDLOOP.
 ENDFORM.
 
