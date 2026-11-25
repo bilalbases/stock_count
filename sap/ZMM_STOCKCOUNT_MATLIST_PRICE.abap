@@ -10,6 +10,14 @@
 *&              Example: 1 EA = 2.50, OTR of 10 EA -> EA row 2.50,
 *&              OTR row 25.00. Empty when the article has no valuation.
 *&   CURRENCY = company code currency of the branch (e.g. AED).
+*& Promotions: if the barcode is in table ZPOS_EXCEL_CMPG with a value in
+*& CUSTOMER_DISCOUNT, PRICE is the promotion price = price - discount
+*& (never below 0). The table is read dynamically: its barcode field
+*& (EAN11 / BARCODE / EAN ...), branch field (WERKS / PLANT / BRANCH) and
+*& valid-from / valid-to date fields are found by name; only campaigns
+*& of this branch valid today count. If one barcode has several, the one
+*& with the latest valid-from date wins. Set GC_DISC_PCT = abap_true if
+*& CUSTOMER_DISCOUNT is a percentage instead of an amount.
 *& The file still loads in the Stock Count app (extra columns are
 *& ignored there).
 *&
@@ -59,7 +67,18 @@ TYPES: BEGIN OF ty_out,                      " string columns = text cells in Ex
          meinh TYPE marm-meinh,
        END OF ty_row.
 
-DATA: gt_out      TYPE STANDARD TABLE OF ty_out,
+TYPES: BEGIN OF ty_disc,
+         barcode TYPE string,            " without leading zeros
+         disc    TYPE p LENGTH 16 DECIMALS 4,
+         datab   TYPE d,
+       END OF ty_disc.
+
+CONSTANTS: gc_disc_tab TYPE tabname   VALUE 'ZPOS_EXCEL_CMPG',
+           gc_disc_fld TYPE fieldname VALUE 'CUSTOMER_DISCOUNT',
+           gc_disc_pct TYPE abap_bool VALUE abap_false.  " abap_true = discount is a %
+
+DATA: gt_disc     TYPE HASHED TABLE OF ty_disc WITH UNIQUE KEY barcode,
+      gt_out      TYPE STANDARD TABLE OF ty_out,
       gv_xlsx     TYPE xstring,
       gr_inactive TYPE RANGE OF mara-mstae.   " empty = any status counts as inactive
 
@@ -151,7 +170,9 @@ FORM select_data.
         lv_bwkey TYPE t001w-bwkey,
         lv_waers TYPE t001-waers,
         lv_price TYPE p LENGTH 16 DECIMALS 4,
-        lv_pstr  TYPE string.
+        lv_pstr  TYPE string,
+        lv_bckey TYPE string,
+        ls_disc  TYPE ty_disc.
   FIELD-SYMBOLS: <m> TYPE ty_mat,
                  <r> TYPE ty_row.
 
@@ -214,6 +235,9 @@ FORM select_data.
     WHERE matnr = lt_mat-matnr
       AND bwkey = lv_bwkey
       AND bwtar = space.
+
+  " 3d. Promotion discounts per barcode (ZPOS_EXCEL_CMPG)
+  PERFORM read_discounts.
 
   " 4. Descriptions
   SELECT * FROM makt
@@ -282,6 +306,20 @@ FORM select_data.
       ELSE.
         lv_price = ls_val-verpr * lv_fact / ls_val-peinh.
       ENDIF.
+      " Promotion: barcode found with a customer discount -> promotion price
+      lv_bckey = condense( val = <r>-ean11 ).
+      SHIFT lv_bckey LEFT DELETING LEADING '0'.
+      READ TABLE gt_disc INTO ls_disc WITH TABLE KEY barcode = lv_bckey.
+      IF sy-subrc = 0.
+        IF gc_disc_pct = abap_true.
+          lv_price = lv_price * ( 100 - ls_disc-disc ) / 100.
+        ELSE.
+          lv_price = lv_price - ls_disc-disc.
+        ENDIF.
+        IF lv_price < 0.
+          lv_price = 0.
+        ENDIF.
+      ENDIF.
       lv_pstr = |{ lv_price DECIMALS = 4 }|.     " 25.5000 -> 25.50, 0.1250 -> 0.125
       lv_pstr = replace( val = lv_pstr regex = '(\.\d\d\d?)0+$' with = '$1' ).
       lv_pstr = replace( val = lv_pstr regex = '(\.\d\d)0$' with = '$1' ).
@@ -289,6 +327,135 @@ FORM select_data.
       ls_out-currency = lv_waers.
     ENDIF.
     APPEND ls_out TO gt_out.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Reads ZPOS_EXCEL_CMPG into GT_DISC (barcode -> discount). Field names
+*& other than CUSTOMER_DISCOUNT are looked up, so the exact table layout
+*& does not have to be known here.
+FORM read_discounts.
+  DATA: lo_type  TYPE REF TO cl_abap_typedescr,
+        lo_struc TYPE REF TO cl_abap_structdescr,
+        lt_flds  TYPE ddfields,
+        ls_fld   TYPE dfies,
+        lr_tab   TYPE REF TO data,
+        lv_bc_f  TYPE fieldname,
+        lv_pl_f  TYPE fieldname,
+        lv_fr_f  TYPE fieldname,
+        lv_to_f  TYPE fieldname,
+        lv_has_d TYPE abap_bool,
+        lv_where TYPE string,
+        lv_str   TYPE string,
+        lv_date  TYPE d,
+        ls_disc  TYPE ty_disc,
+        ls_old   TYPE ty_disc,
+        lx_err   TYPE REF TO cx_root.
+  FIELD-SYMBOLS: <t> TYPE STANDARD TABLE,
+                 <w> TYPE any,
+                 <f> TYPE any.
+
+  cl_abap_typedescr=>describe_by_name(
+    EXPORTING  p_name         = gc_disc_tab
+    RECEIVING  p_descr_ref    = lo_type
+    EXCEPTIONS type_not_found = 1
+               OTHERS         = 2 ).
+  IF sy-subrc <> 0.
+    MESSAGE |Table { gc_disc_tab } not found - prices without promotions| TYPE 'S' DISPLAY LIKE 'W'.
+    RETURN.
+  ENDIF.
+  lo_struc ?= lo_type.
+  lt_flds = lo_struc->get_ddic_field_list( ).
+
+  LOOP AT lt_flds INTO ls_fld.
+    CASE ls_fld-fieldname.
+      WHEN gc_disc_fld.
+        lv_has_d = abap_true.
+      WHEN 'EAN11' OR 'BARCODE' OR 'EAN' OR 'ZBARCODE' OR 'ZEAN' OR 'EAN_CODE' OR 'GTIN' OR 'UPC'.
+        IF lv_bc_f IS INITIAL. lv_bc_f = ls_fld-fieldname. ENDIF.
+      WHEN 'WERKS' OR 'PLANT' OR 'BRANCH' OR 'SITE' OR 'STORE' OR 'ZWERKS'.
+        IF lv_pl_f IS INITIAL. lv_pl_f = ls_fld-fieldname. ENDIF.
+      WHEN 'DATAB' OR 'VALID_FROM' OR 'FROM_DATE' OR 'DATE_FROM' OR 'START_DATE' OR 'BEGDA' OR 'VALIDFROM'.
+        IF ls_fld-inttype = 'D' AND lv_fr_f IS INITIAL. lv_fr_f = ls_fld-fieldname. ENDIF.
+      WHEN 'DATBI' OR 'VALID_TO' OR 'TO_DATE' OR 'DATE_TO' OR 'END_DATE' OR 'ENDDA' OR 'VALIDTO'.
+        IF ls_fld-inttype = 'D' AND lv_to_f IS INITIAL. lv_to_f = ls_fld-fieldname. ENDIF.
+    ENDCASE.
+  ENDLOOP.
+  IF lv_bc_f IS INITIAL.                      " any other field with BARCODE / EAN in its name
+    LOOP AT lt_flds INTO ls_fld WHERE fieldname CS 'BARCODE' OR fieldname CS 'EAN'.
+      lv_bc_f = ls_fld-fieldname.
+      EXIT.
+    ENDLOOP.
+  ENDIF.
+  IF lv_has_d = abap_false OR lv_bc_f IS INITIAL.
+    MESSAGE |{ gc_disc_tab }: barcode or { gc_disc_fld } field not found - prices without promotions|
+      TYPE 'S' DISPLAY LIKE 'W'.
+    RETURN.
+  ENDIF.
+
+  IF lv_pl_f IS NOT INITIAL.
+    lv_where = |{ lv_pl_f } = '{ p_werks }'|.
+  ENDIF.
+
+  CREATE DATA lr_tab TYPE STANDARD TABLE OF (gc_disc_tab).
+  ASSIGN lr_tab->* TO <t>.
+  TRY.
+      SELECT * FROM (gc_disc_tab) INTO TABLE <t> WHERE (lv_where).
+    CATCH cx_root INTO lx_err.
+      MESSAGE |{ gc_disc_tab }: { lx_err->get_text( ) }| TYPE 'S' DISPLAY LIKE 'W'.
+      RETURN.
+  ENDTRY.
+
+  LOOP AT <t> ASSIGNING <w>.
+    CLEAR ls_disc.
+    " Only campaigns valid today
+    IF lv_fr_f IS NOT INITIAL.
+      ASSIGN COMPONENT lv_fr_f OF STRUCTURE <w> TO <f>.
+      lv_date = <f>.
+      IF lv_date IS NOT INITIAL AND lv_date > sy-datum.
+        CONTINUE.
+      ENDIF.
+      ls_disc-datab = lv_date.
+    ENDIF.
+    IF lv_to_f IS NOT INITIAL.
+      ASSIGN COMPONENT lv_to_f OF STRUCTURE <w> TO <f>.
+      lv_date = <f>.
+      IF lv_date IS NOT INITIAL AND lv_date < sy-datum.
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+
+    " Discount value (works for number and text fields, e.g. '5.00' or '5%')
+    ASSIGN COMPONENT gc_disc_fld OF STRUCTURE <w> TO <f>.
+    lv_str = |{ <f> }|.
+    REPLACE ALL OCCURRENCES OF '%' IN lv_str WITH ''.
+    REPLACE ALL OCCURRENCES OF ',' IN lv_str WITH '.'.
+    CONDENSE lv_str NO-GAPS.
+    IF lv_str IS INITIAL.
+      CONTINUE.
+    ENDIF.
+    TRY.
+        ls_disc-disc = lv_str.
+      CATCH cx_root.
+        CONTINUE.
+    ENDTRY.
+    IF ls_disc-disc <= 0.
+      CONTINUE.
+    ENDIF.
+
+    ASSIGN COMPONENT lv_bc_f OF STRUCTURE <w> TO <f>.
+    ls_disc-barcode = condense( val = |{ <f> }| ).
+    SHIFT ls_disc-barcode LEFT DELETING LEADING '0'.
+    IF ls_disc-barcode IS INITIAL.
+      CONTINUE.
+    ENDIF.
+
+    READ TABLE gt_disc INTO ls_old WITH TABLE KEY barcode = ls_disc-barcode.
+    IF sy-subrc <> 0.
+      INSERT ls_disc INTO TABLE gt_disc.
+    ELSEIF ls_disc-datab >= ls_old-datab.     " newest campaign wins
+      MODIFY TABLE gt_disc FROM ls_disc.
+    ENDIF.
   ENDLOOP.
 ENDFORM.
 
